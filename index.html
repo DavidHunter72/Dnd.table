@@ -229,11 +229,73 @@ let tvMode = false;
 let anthropicKey = null; // DM's own key, kept in this browser only, never synced to the gist
 let generatingNarration = false;
 let prefilledInviteCode = null;
+let openBackstoryId = null;
 
 function toggleTvMode(){ tvMode = !tvMode; render(); }
 
 const CLASSES = ['Fighter','Wizard','Rogue','Cleric','Ranger','Barbarian','Bard','Druid','Paladin','Sorcerer','Warlock','Monk'];
-const RACES = ['Human','Elf','Dwarf','Halfling','Half-Orc','Tiefling','Dragonborn','Gnome'];
+const RACES = ['Human','Elf','Dwarf','Halfling','Half-Orc','Tiefling','Dragonborn','Gnome','Half-Elf'];
+const ALIGNMENTS = ['Lawful Good','Neutral Good','Chaotic Good','Lawful Neutral','True Neutral','Chaotic Neutral','Lawful Evil','Neutral Evil','Chaotic Evil'];
+
+// Real D&D 5e mechanics (point-buy, hit dice, AC/HP/proficiency formulas)
+const POINT_COST = {8:0,9:1,10:2,11:3,12:4,13:5,14:7,15:9};
+const CLASS_DATA = {
+  Barbarian:{hd:12,pri:['str','con','dex'],armor:'Medium Armor',weapon:'Greataxe',ac:14},
+  Bard:{hd:8,pri:['cha','dex','con'],armor:'Light Armor',weapon:'Rapier',ac:13},
+  Cleric:{hd:8,pri:['wis','con','str'],armor:'Medium Armor + Shield',weapon:'Mace',ac:15},
+  Druid:{hd:8,pri:['wis','con','dex'],armor:'Medium Armor',weapon:'Quarterstaff',ac:14},
+  Fighter:{hd:10,pri:['str','con','dex'],armor:'Heavy Armor',weapon:'Longsword + Shield',ac:16},
+  Monk:{hd:8,pri:['dex','wis','con'],armor:'Unarmored',weapon:'Shortsword',ac:14},
+  Paladin:{hd:10,pri:['str','cha','con'],armor:'Heavy Armor',weapon:'Longsword + Shield',ac:17},
+  Ranger:{hd:10,pri:['dex','wis','con'],armor:'Medium Armor',weapon:'Longbow',ac:14},
+  Rogue:{hd:8,pri:['dex','int','cha'],armor:'Light Armor',weapon:'Daggers',ac:14},
+  Sorcerer:{hd:6,pri:['cha','con','dex'],armor:'Robes',weapon:'Arcane Focus',ac:12},
+  Warlock:{hd:8,pri:['cha','con','dex'],armor:'Light Armor',weapon:'Pact Weapon',ac:13},
+  Wizard:{hd:6,pri:['int','dex','con'],armor:'Robes',weapon:'Quarterstaff',ac:12},
+};
+function statMod(score){ return Math.floor((score-10)/2); }
+function fmtMod(m){ return m>=0 ? '+'+m : String(m); }
+function profBonus(level){ return 2 + Math.floor((level-1)/4); }
+function calcHp(cls, level, conMod){
+  const hd = (CLASS_DATA[cls]||{hd:8}).hd;
+  return Math.max(hd*level + conMod*level, 1);
+}
+function calcAc(cls, dexMod){
+  const base = (CLASS_DATA[cls]||{ac:10}).ac || 10;
+  return Math.max(10+dexMod, base+dexMod);
+}
+function getEquipment(cls){
+  const gear = new Set(['Backpack','Torch','Rations (5)','Rope (50ft)','Waterskin']);
+  const d = CLASS_DATA[cls]||{};
+  if(d.weapon) gear.add(d.weapon);
+  if(d.armor) gear.add(d.armor);
+  return Array.from(gear).sort();
+}
+function pointCost(v){ return POINT_COST[v] !== undefined ? POINT_COST[v] : (v<8?0:9); }
+function pointsSpent(stats){
+  return ['str','dex','con','int','wis','cha'].reduce((sum,k)=>sum+pointCost(stats[k]),0);
+}
+function autoStats(cls){
+  const pri = ((CLASS_DATA[cls]||{}).pri || []).slice();
+  const order = pri.concat(['str','dex','con','int','wis','cha'].filter(s=>!pri.includes(s)));
+  let stats = {str:8,dex:8,con:8,int:8,wis:8,cha:8};
+  let points = 27;
+  for(const stat of order){
+    for(const target of [15,14,13,12,11,10,9,8]){
+      if(target<=stats[stat]) continue;
+      const cost = pointCost(target)-pointCost(stats[stat]);
+      if(cost<=points){ points-=cost; stats[stat]=target; break; }
+    }
+  }
+  for(const stat of order){
+    while(stats[stat]<15 && points>0){
+      const nxt = stats[stat]+1;
+      const cost = pointCost(nxt)-pointCost(stats[stat]);
+      if(points>=cost){ stats[stat]=nxt; points-=cost; } else break;
+    }
+  }
+  return stats;
+}
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
 function now(){ return Date.now(); }
@@ -388,7 +450,7 @@ function parseInviteCode(code){
 
 function buildDMPrompt(kind){
   const partySummary = session.party.length
-    ? session.party.map(p=>`${p.name} — ${p.race} ${p.class}, Level ${p.level}, HP ${p.hp}/${p.maxHp}, AC ${p.ac}${p.playerName?` (played by ${p.playerName})`:' (unclaimed / NPC-controlled)'}`).join('\n')
+    ? session.party.map(p=>`${p.name} — ${p.race} ${p.class}, Level ${p.level}${p.alignment?', '+p.alignment:''}, HP ${p.hp}/${p.maxHp}, AC ${p.ac}${p.background?`, background: ${p.background}`:''}${p.playerName?` (played by ${p.playerName})`:' (unclaimed / NPC-controlled)'}`).join('\n')
     : 'No adventurers have been added yet.';
 
   const recentLog = session.log.slice(-18).map(e=>{
@@ -428,6 +490,70 @@ ${recentLog || '(the story has not yet begun)'}
 
 DM INSTRUCTION:
 ${instruction}`;
+}
+
+async function callClaudeQuick(userMsg, maxTokens, systemPrompt){
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': anthropicKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify(Object.assign(
+      {model:'claude-sonnet-4-6', max_tokens:maxTokens, messages:[{role:'user', content:userMsg}]},
+      systemPrompt ? {system:systemPrompt} : {}
+    ))
+  });
+  if(!res.ok){ let t=''; try{t=await res.text();}catch(e){} throw new Error(`HTTP ${res.status} — ${t.slice(0,160)}`); }
+  const data = await res.json();
+  return (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n').trim();
+}
+
+async function generateCharacterName(){
+  if(!anthropicKey){ promptAddKey(); if(!anthropicKey) return; }
+  const race = document.getElementById('c-race').value.trim() || 'Human';
+  const btn = document.getElementById('gen-name-btn');
+  if(btn){ btn.disabled=true; btn.textContent='Generating…'; }
+  try{
+    const text = await callClaudeQuick(`Create ONE fantasy D&D name for a ${race}. Return only the name, nothing else.`, 50);
+    document.getElementById('c-name').value = text.split('\n')[0].trim();
+  }catch(e){ alert('Name generation failed — ' + (e.message||e)); }
+  if(btn){ btn.disabled=false; btn.textContent='✨ Generate Name'; }
+}
+
+async function generateCharacterBackstory(){
+  if(!anthropicKey){ promptAddKey(); if(!anthropicKey) return; }
+  const name = document.getElementById('c-name').value.trim();
+  const race = document.getElementById('c-race').value.trim();
+  const cls = document.getElementById('c-class').value;
+  const level = document.getElementById('c-level').value;
+  const alignment = document.getElementById('c-alignment').value;
+  const background = document.getElementById('c-background').value.trim();
+  if(!name || !race){ alert('Fill in name and race first.'); return; }
+  const btn = document.getElementById('gen-backstory-btn');
+  if(btn){ btn.disabled=true; btn.textContent='Writing…'; }
+  const bgNote = background ? `Background: ${background}\n` : '';
+  const prompt = `Write a rich, immersive D&D character backstory for:\nName: ${name}\nRace: ${race}\n${bgNote}Alignment: ${alignment}\nClass: ${cls} (level ${level})\n\nWrite 4-6 substantial paragraphs covering: early life and origins, a formative childhood event, how they discovered and trained in their class, a defining adventure or conflict that tested them, their core motivation, and a current unresolved plot hook pulling them forward. Vivid fantasy novel style, with specific named people and places.`;
+  try{
+    const text = await callClaudeQuick(prompt, 1200, 'You are a creative D&D storyteller and worldbuilder. Write rich, detailed, novelistic backstories with specific imagery and named characters and locations.');
+    document.getElementById('c-backstory').value = text;
+  }catch(e){ alert('Backstory generation failed — ' + (e.message||e)); }
+  if(btn){ btn.disabled=false; btn.textContent='✨ Generate Backstory'; }
+}
+
+function generatePortrait(){
+  const name = document.getElementById('c-name').value.trim() || 'a hero';
+  const race = document.getElementById('c-race').value.trim() || 'Human';
+  const cls = document.getElementById('c-class').value;
+  const alignment = document.getElementById('c-alignment').value;
+  const prompt = `Fantasy character portrait of ${name}, a ${race} ${cls}, ${alignment} alignment, cinematic fantasy oil painting, dramatic lighting, detailed, no text`;
+  const seed = Math.floor(Math.random()*99999);
+  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=400&height=400&nologo=true&seed=${seed}`;
+  document.getElementById('c-portrait-url').value = url;
+  const preview = document.getElementById('c-portrait-preview');
+  if(preview) preview.innerHTML = `<img src="${url}" style="width:100%;border-radius:8px;border:1px solid var(--line);margin-top:8px;" alt="portrait preview"/>`;
 }
 
 async function generateNarration(kind){
@@ -866,22 +992,32 @@ function handlePlayerAction(){
 
 function pcCardHTML(p, isDM){
   const hpPct = Math.max(0, Math.min(100, (p.hp/p.maxHp)*100));
+  const pb = p.proficiencyBonus || profBonus(p.level||1);
   return `
   <div class="pc">
+    ${p.portraitUrl ? `<img src="${p.portraitUrl}" style="width:100%;border-radius:8px;margin-bottom:10px;" alt="${esc(p.name)} portrait"/>` : ''}
     <div class="name">${esc(p.name)}</div>
-    <div class="cls">${esc(p.race)} ${esc(p.class)} · Lv ${p.level} ${p.playerName? '· '+esc(p.playerName): '· NPC/paper'}</div>
-    <div class="small">HP ${p.hp}/${p.maxHp} &nbsp;·&nbsp; AC ${p.ac}</div>
+    <div class="cls">${esc(p.race)} ${esc(p.class)} · Lv ${p.level}${p.alignment?' · '+esc(p.alignment):''}${p.playerName? ' · '+esc(p.playerName): ' · NPC/paper'}</div>
+    <div class="small">HP ${p.hp}/${p.maxHp} &nbsp;·&nbsp; AC ${p.ac} &nbsp;·&nbsp; Prof +${pb}</div>
     <div class="bar-track"><div class="bar-fill" style="width:${hpPct}%"></div></div>
     <div class="stats">
-      <div><b>${p.abilities.str}</b>STR</div><div><b>${p.abilities.dex}</b>DEX</div><div><b>${p.abilities.con}</b>CON</div>
-      <div><b>${p.abilities.int}</b>INT</div><div><b>${p.abilities.wis}</b>WIS</div><div><b>${p.abilities.cha}</b>CHA</div>
+      <div><b>${p.abilities.str} (${fmtMod(statMod(p.abilities.str))})</b>STR</div><div><b>${p.abilities.dex} (${fmtMod(statMod(p.abilities.dex))})</b>DEX</div><div><b>${p.abilities.con} (${fmtMod(statMod(p.abilities.con))})</b>CON</div>
+      <div><b>${p.abilities.int} (${fmtMod(statMod(p.abilities.int))})</b>INT</div><div><b>${p.abilities.wis} (${fmtMod(statMod(p.abilities.wis))})</b>WIS</div><div><b>${p.abilities.cha} (${fmtMod(statMod(p.abilities.cha))})</b>CHA</div>
     </div>
+    ${p.equipment && p.equipment.length ? `<p class="small" style="margin-top:8px;"><b>Gear:</b> ${p.equipment.map(esc).join(', ')}</p>` : ''}
+    ${p.background ? `<p class="small" style="margin-top:4px;"><b>Background:</b> ${esc(p.background)}</p>` : ''}
+    ${p.backstory ? `<p class="small" style="margin-top:6px;"><a class="link" onclick="toggleBackstory('${p.id}')">${openBackstoryId===p.id ? 'Hide backstory' : 'Read backstory'}</a></p>${openBackstoryId===p.id ? `<p class="small" style="white-space:pre-wrap;line-height:1.6;margin-top:6px;">${esc(p.backstory)}</p>` : ''}` : ''}
     <div class="row" style="margin-top:10px;">
       <button class="ghost" onclick="adjustHP('${p.id}', -1)">HP −</button>
       <button class="ghost" onclick="adjustHP('${p.id}', 1)">HP +</button>
       ${isDM ? `<button class="ghost" onclick="removeCharacter('${p.id}')">Remove</button>` : ''}
     </div>
   </div>`;
+}
+
+function toggleBackstory(id){
+  openBackstoryId = openBackstoryId===id ? null : id;
+  render();
 }
 
 function adjustHP(id, dir){
@@ -913,49 +1049,117 @@ function openCharacterForm(){
   <div class="card">
     <h2>New Character</h2>
     <div class="row">
-      <div class="field"><label>Name</label><input id="c-name" /></div>
+      <div class="field"><label>Name</label><div class="row"><input id="c-name" style="flex:2;" /><button id="gen-name-btn" style="flex:0 0 auto;" onclick="generateCharacterName()">✨ Generate Name</button></div></div>
       <div class="field"><label>${role==='dm'?'Player Name (blank = paper/NPC)':'Your Name'}</label><input id="c-player" value="${role==='player'?esc(playerName):''}" ${role==='player'?'readonly':''} /></div>
     </div>
     <div class="row">
-      <div class="field"><label>Race</label><select id="c-race">${RACES.map(r=>`<option>${r}</option>`).join('')}</select></div>
-      <div class="field"><label>Class</label><select id="c-class">${CLASSES.map(c=>`<option>${c}</option>`).join('')}</select></div>
-      <div class="field"><label>Level</label><input id="c-level" type="number" value="1" min="1" max="20" /></div>
+      <div class="field"><label>Race</label><input id="c-race" list="race-options" placeholder="e.g. Half-Elf, Tiefling..." /><datalist id="race-options">${RACES.map(r=>`<option value="${r}">`).join('')}</datalist></div>
+      <div class="field"><label>Class</label><select id="c-class" onchange="updateStatPreview()">${CLASSES.map(c=>`<option>${c}</option>`).join('')}</select></div>
+      <div class="field"><label>Level</label><input id="c-level" type="number" value="1" min="1" max="20" onchange="updateStatPreview()" /></div>
     </div>
     <div class="row">
-      <div class="field"><label>Max HP</label><input id="c-hp" type="number" value="10" /></div>
-      <div class="field"><label>AC</label><input id="c-ac" type="number" value="12" /></div>
+      <div class="field"><label>Alignment</label><select id="c-alignment">${ALIGNMENTS.map(a=>`<option>${a}</option>`).join('')}</select></div>
+      <div class="field"><label>Background</label><input id="c-background" placeholder="e.g. Blacksmith's apprentice" /></div>
     </div>
+
+    <div class="banner info" style="font-size:12px;">Point-buy: 27 points, scores 8–15. <span id="points-remaining">27 points remaining</span>.</div>
     <div class="row">
-      ${['str','dex','con','int','wis','cha'].map(a=>`<div class="field"><label>${a.toUpperCase()}</label><input id="c-${a}" type="number" value="10" /></div>`).join('')}
+      ${['str','dex','con','int','wis','cha'].map(a=>`<div class="field"><label>${a.toUpperCase()}</label><input id="c-${a}" type="number" value="8" min="8" max="15" onchange="updateStatPreview()" /></div>`).join('')}
     </div>
-    <div class="row">
+    <div class="row" style="margin-bottom:14px;">
+      <button onclick="autoAssignStats()">🎲 Auto-Assign for Class</button>
+    </div>
+
+    <div class="banner info" id="stat-preview" style="font-size:13px;"></div>
+
+    <div class="field" style="margin-top:14px;">
+      <label>Backstory (optional)</label>
+      <div class="row" style="margin-bottom:8px;"><button id="gen-backstory-btn" onclick="generateCharacterBackstory()">✨ Generate Backstory</button></div>
+      <textarea id="c-backstory" rows="5" placeholder="Where they're from, what drives them, an unresolved plot hook..."></textarea>
+    </div>
+
+    <div class="field">
+      <label>Portrait (optional, free, no key needed)</label>
+      <button onclick="generatePortrait()">🎨 Generate Portrait</button>
+      <input id="c-portrait-url" type="hidden" />
+      <div id="c-portrait-preview"></div>
+    </div>
+
+    <div class="row" style="margin-top:16px;">
       <button class="ghost" onclick="document.getElementById('char-form-slot').innerHTML=''">Cancel</button>
       <button class="primary" onclick="submitCharacterForm()">Save Character</button>
     </div>
   </div>`;
+  updateStatPreview();
+}
+
+function readAbilityInputs(){
+  return {
+    str: parseInt(document.getElementById('c-str').value,10)||8,
+    dex: parseInt(document.getElementById('c-dex').value,10)||8,
+    con: parseInt(document.getElementById('c-con').value,10)||8,
+    int: parseInt(document.getElementById('c-int').value,10)||8,
+    wis: parseInt(document.getElementById('c-wis').value,10)||8,
+    cha: parseInt(document.getElementById('c-cha').value,10)||8,
+  };
+}
+
+function autoAssignStats(){
+  const cls = document.getElementById('c-class').value;
+  const stats = autoStats(cls);
+  ['str','dex','con','int','wis','cha'].forEach(k=>{ document.getElementById('c-'+k).value = stats[k]; });
+  updateStatPreview();
+}
+
+function updateStatPreview(){
+  const stats = readAbilityInputs();
+  const cls = document.getElementById('c-class').value;
+  const level = parseInt(document.getElementById('c-level').value,10)||1;
+  const spent = pointsSpent(stats);
+  const remaining = 27 - spent;
+  const remEl = document.getElementById('points-remaining');
+  if(remEl){
+    remEl.textContent = remaining >= 0 ? `${remaining} points remaining` : `${Math.abs(remaining)} points OVER budget`;
+    remEl.style.color = remaining < 0 ? '#f0b8bd' : '';
+  }
+  const conMod = statMod(stats.con), dexMod = statMod(stats.dex);
+  const hp = calcHp(cls, level, conMod);
+  const ac = calcAc(cls, dexMod);
+  const pb = profBonus(level);
+  const gear = getEquipment(cls);
+  const prev = document.getElementById('stat-preview');
+  if(prev){
+    prev.innerHTML = `<b>HP:</b> ${hp} &nbsp; <b>AC:</b> ${ac} &nbsp; <b>Proficiency:</b> +${pb} &nbsp; <b>Mods:</b> STR ${fmtMod(statMod(stats.str))} DEX ${fmtMod(dexMod)} CON ${fmtMod(conMod)} INT ${fmtMod(statMod(stats.int))} WIS ${fmtMod(statMod(stats.wis))} CHA ${fmtMod(statMod(stats.cha))}<br/><b>Starting gear:</b> ${gear.join(', ')}`;
+  }
 }
 
 function submitCharacterForm(){
   const name = document.getElementById('c-name').value.trim();
   if(!name){ alert('Give your character a name.'); return; }
+  const race = document.getElementById('c-race').value.trim() || 'Human';
+  const cls = document.getElementById('c-class').value;
+  const level = parseInt(document.getElementById('c-level').value,10)||1;
+  const alignment = document.getElementById('c-alignment').value;
+  const background = document.getElementById('c-background').value.trim();
+  const stats = readAbilityInputs();
+  const spent = pointsSpent(stats);
+  if(spent > 27){
+    if(!window.confirm(`These ability scores cost ${spent}/27 points — over budget. Save anyway?`)) return;
+  }
+  const conMod = statMod(stats.con), dexMod = statMod(stats.dex);
   const draft = {
     id: uid(),
     name,
     playerName: document.getElementById('c-player').value.trim() || null,
-    race: document.getElementById('c-race').value,
-    class: document.getElementById('c-class').value,
-    level: parseInt(document.getElementById('c-level').value,10)||1,
-    hp: parseInt(document.getElementById('c-hp').value,10)||10,
-    maxHp: parseInt(document.getElementById('c-hp').value,10)||10,
-    ac: parseInt(document.getElementById('c-ac').value,10)||12,
-    abilities: {
-      str: parseInt(document.getElementById('c-str').value,10)||10,
-      dex: parseInt(document.getElementById('c-dex').value,10)||10,
-      con: parseInt(document.getElementById('c-con').value,10)||10,
-      int: parseInt(document.getElementById('c-int').value,10)||10,
-      wis: parseInt(document.getElementById('c-wis').value,10)||10,
-      cha: parseInt(document.getElementById('c-cha').value,10)||10,
-    }
+    race, class: cls, level, alignment, background,
+    backstory: document.getElementById('c-backstory').value.trim() || null,
+    portraitUrl: document.getElementById('c-portrait-url').value || null,
+    hp: calcHp(cls, level, conMod),
+    maxHp: calcHp(cls, level, conMod),
+    ac: calcAc(cls, dexMod),
+    proficiencyBonus: profBonus(level),
+    equipment: getEquipment(cls),
+    abilities: stats,
   };
   addOrClaimCharacter(draft);
   document.getElementById('char-form-slot').innerHTML='';
