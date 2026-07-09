@@ -226,6 +226,8 @@ let creatingSession = false;
 let joiningSession = false;
 let lastError = null;
 let tvMode = false;
+let anthropicKey = null; // DM's own key, kept in this browser only, never synced to the gist
+let generatingNarration = false;
 
 function toggleTvMode(){ tvMode = !tvMode; render(); }
 
@@ -255,67 +257,98 @@ function freshSession(campaignName, setting){
   };
 }
 
-/* ============================= STORAGE (kvdb.io) =============================
-   Syncs across devices using kvdb.io, a free public key-value store, so this
-   works in any ordinary browser without a Claude account. Each campaign gets
-   its own "bucket" (the session code); the full session state is stored as
-   JSON under one key inside that bucket. */
-const KVDB_BASE = 'https://kvdb.io';
-const POLL_MS = 20000; // conservative, to stay within kvdb.io's shared rate limit
+/* ============================= STORAGE (GitHub Gists) =============================
+   Syncs across devices using a GitHub Gist as shared storage — verified to support
+   CORS for both reads and authenticated writes from a plain browser. The DM creates
+   a Gist and generates a "gist-scoped" GitHub personal access token; the resulting
+   invite code bundles the gist ID + token so every device (DM and players alike)
+   can read AND write the shared session file. Conditional requests (ETag) keep
+   polling cheap and mostly free against GitHub's rate limits. */
+const GITHUB_API = 'https://api.github.com';
+const POLL_MS = 8000;
+let sharedToken = null;   // gist-scoped GitHub token, shared via the invite code
+let lastEtag = null;
 
-async function kvCreateBucket(){
-  let res;
-  try{
-    res = await fetch(KVDB_BASE + '/', {
-      method:'POST',
-      headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body:'email=dm@reckoning-table.local'
-    });
-  }catch(networkErr){
-    throw new Error('NETWORK: request never reached kvdb.io (likely blocked, offline, or a CORS/network policy issue). ' + (networkErr && networkErr.message ? networkErr.message : ''));
-  }
-  if(!res.ok){
-    let bodyTxt = '';
-    try{ bodyTxt = await res.text(); }catch(e){}
-    throw new Error(`HTTP ${res.status} ${res.statusText} — ${bodyTxt.slice(0,120)}`);
-  }
-  const id = (await res.text()).trim();
-  if(!id) throw new Error('kvdb.io returned an empty bucket id');
-  return id;
+function ghHeaders(extra){
+  const h = Object.assign({'Accept':'application/vnd.github+json'}, extra||{});
+  if(sharedToken) h['Authorization'] = 'token ' + sharedToken;
+  return h;
 }
 
-async function kvGet(bucket){
-  const res = await fetch(`${KVDB_BASE}/${bucket}/session`, {cache:'no-store'});
-  if(res.status === 404) return null;
-  if(!res.ok) throw new Error('kv get failed: ' + res.status);
-  const text = await res.text();
-  if(!text) return null;
-  return JSON.parse(text);
-}
-
-async function kvSet(bucket, obj){
+async function ghCreateGist(campaignName, initialStateObj){
   let res;
   try{
-    res = await fetch(`${KVDB_BASE}/${bucket}/session`, {
+    res = await fetch(`${GITHUB_API}/gists`, {
       method:'POST',
-      headers:{'Content-Type':'text/plain'},
-      body: JSON.stringify(obj)
+      headers: ghHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({
+        description: 'The Reckoning Table — ' + campaignName,
+        public: true,
+        files: { 'session.json': { content: JSON.stringify(initialStateObj) } }
+      })
     });
   }catch(networkErr){
     throw new Error('NETWORK: ' + (networkErr && networkErr.message ? networkErr.message : 'request failed'));
   }
-  if(!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+  if(!res.ok){
+    let bodyTxt=''; try{ bodyTxt = await res.text(); }catch(e){}
+    throw new Error(`HTTP ${res.status} — ${bodyTxt.slice(0,160)}`);
+  }
+  const data = await res.json();
+  lastEtag = res.headers.get('ETag');
+  return data.id;
 }
 
-async function loadSession(code){
-  try{ return await kvGet(code); }
-  catch(e){ return null; }
+async function ghGetGist(id){
+  const headers = ghHeaders();
+  if(lastEtag) headers['If-None-Match'] = lastEtag;
+  let res;
+  try{
+    res = await fetch(`${GITHUB_API}/gists/${id}`, {headers, cache:'no-store'});
+  }catch(networkErr){
+    throw new Error('NETWORK: ' + (networkErr && networkErr.message ? networkErr.message : 'request failed'));
+  }
+  if(res.status === 304) return {unchanged:true};
+  if(!res.ok){
+    let bodyTxt=''; try{ bodyTxt = await res.text(); }catch(e){}
+    throw new Error(`HTTP ${res.status} — ${bodyTxt.slice(0,160)}`);
+  }
+  lastEtag = res.headers.get('ETag') || lastEtag;
+  const data = await res.json();
+  const file = data.files && data.files['session.json'];
+  if(!file || !file.content) throw new Error('session.json missing from gist');
+  return {unchanged:false, state: JSON.parse(file.content)};
 }
-async function saveSession(code, obj){
+
+async function ghUpdateGist(id, obj){
+  let res;
+  try{
+    res = await fetch(`${GITHUB_API}/gists/${id}`, {
+      method:'PATCH',
+      headers: ghHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ files: { 'session.json': { content: JSON.stringify(obj) } } })
+    });
+  }catch(networkErr){
+    throw new Error('NETWORK: ' + (networkErr && networkErr.message ? networkErr.message : 'request failed'));
+  }
+  if(!res.ok){
+    let bodyTxt=''; try{ bodyTxt = await res.text(); }catch(e){}
+    throw new Error(`HTTP ${res.status} — ${bodyTxt.slice(0,160)}`);
+  }
+  lastEtag = res.headers.get('ETag') || lastEtag;
+}
+
+async function loadSession(id){
+  try{
+    const r = await ghGetGist(id);
+    return r.unchanged ? null : r.state;
+  }catch(e){ lastError = 'Could not load session — ' + (e && e.message ? e.message : 'unknown error'); return null; }
+}
+async function saveSession(id, obj){
   obj.updatedAt = now();
   obj.version = (obj.version||0)+1;
   try{
-    await kvSet(code, obj);
+    await ghUpdateGist(id, obj);
     return true;
   }catch(e){ lastError = 'Could not sync — ' + (e && e.message ? e.message : 'unknown error'); return false; }
 }
@@ -323,9 +356,9 @@ async function saveSession(code, obj){
 async function refreshFromRemote(){
   if(!sessionCode) return;
   try{
-    const remote = await loadSession(sessionCode);
-    if(remote && (!session || remote.version > session.version)){
-      session = remote;
+    const r = await ghGetGist(sessionCode);
+    if(!r.unchanged && r.state && (!session || r.state.version > session.version)){
+      session = r.state;
       render();
     }
   }catch(e){ /* silent — will retry on next poll */ }
@@ -339,11 +372,18 @@ function stopPolling(){
   pollHandle = null;
 }
 
+function makeInviteCode(id, token){ return id + '::' + token; }
+function parseInviteCode(code){
+  const parts = (code||'').trim().split('::');
+  if(parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  return {id: parts[0].trim(), token: parts[1].trim()};
+}
+
 /* ============================= DM NARRATION (manual bridge) =============================
-   kvdb.io (needed for cross-device sync) can't be reached from inside Claude's artifact
-   sandbox, so this app is meant to run in a normal browser tab for everyone, DM included.
-   That also means it can't silently call the Anthropic API for you. Instead: the DM builds
-   a prompt here, pastes it to Claude in a separate chat, and pastes the reply back in. */
+   Claude's artifact sandbox can't reach arbitrary third-party APIs, so this app is meant
+   to run in a normal browser tab for everyone, DM included — that's also why it can't
+   silently call the Anthropic API for you. Instead: the DM builds a prompt here, pastes
+   it to Claude in a separate chat, and pastes the reply back in. */
 
 function buildDMPrompt(kind){
   const partySummary = session.party.length
@@ -389,6 +429,41 @@ DM INSTRUCTION:
 ${instruction}`;
 }
 
+async function generateNarration(kind){
+  if(generatingNarration) return;
+  generatingNarration = true; lastError = null; render();
+  try{
+    const prompt = buildDMPrompt(kind);
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': anthropicKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1000,
+        messages: [{role:'user', content: prompt}]
+      })
+    });
+    if(!res.ok){
+      let bodyTxt=''; try{ bodyTxt = await res.text(); }catch(e){}
+      throw new Error(`HTTP ${res.status} — ${bodyTxt.slice(0,160)}`);
+    }
+    const data = await res.json();
+    const text = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n').trim();
+    if(!text) throw new Error('empty response from the AI');
+    await postDMNarration(text);
+  }catch(e){
+    lastError = 'The AI DM call failed — ' + (e && e.message ? e.message : 'unknown error') + '. You can still use the copy/paste option below.';
+  }
+  generatingNarration = false;
+  render();
+}
+
+
 let lastCopiedPrompt = false;
 function copyDMPrompt(kind){
   const prompt = buildDMPrompt(kind);
@@ -426,44 +501,52 @@ function rollDice(expr){
 }
 
 /* ============================= ACTIONS ============================= */
-async function createSession(campaignName, setting){
+async function createSession(campaignName, setting, token){
   lastError = null;
   creatingSession = true; render();
   try{
-    sessionCode = await kvCreateBucket();
+    sharedToken = token;
     session = freshSession(campaignName, setting);
+    sessionCode = await ghCreateGist(campaignName, session);
     role = 'dm';
-    await saveSession(sessionCode, session);
     view = 'dm';
     startPolling();
   }catch(e){
-    lastError = 'Could not create a session — ' + (e && e.message ? e.message : 'unknown error') + '. Try opening this file in a plain browser tab instead of inside Claude if the problem persists.';
+    lastError = 'Could not create a session — ' + (e && e.message ? e.message : 'unknown error');
+    sharedToken = null;
   }
   creatingSession = false;
   render();
 }
 
-async function joinAsDM(code){
+async function joinAsDM(inviteCode){
+  const parsed = parseInviteCode(inviteCode);
+  if(!parsed){ lastError='That invite code looks incomplete — make sure you pasted the whole thing.'; render(); return; }
   joiningSession = true; lastError=null; render();
-  const s = await loadSession(code);
+  sharedToken = parsed.token; lastEtag = null;
+  const s = await loadSession(parsed.id);
   joiningSession = false;
-  if(!s){ lastError='No session found with that code.'; render(); return; }
-  sessionCode = code; session = s; role='dm'; view='dm';
+  if(!s){ if(!lastError) lastError='No session found with that code.'; sharedToken=null; render(); return; }
+  sessionCode = parsed.id; session = s; role='dm'; view='dm';
   startPolling(); render();
 }
 
-async function joinAsPlayer(code, name){
+async function joinAsPlayer(inviteCode, name){
+  const parsed = parseInviteCode(inviteCode);
+  if(!parsed){ lastError='That invite code looks incomplete — make sure you pasted the whole thing your DM sent.'; render(); return; }
   joiningSession = true; lastError=null; render();
-  const s = await loadSession(code);
+  sharedToken = parsed.token; lastEtag = null;
+  const s = await loadSession(parsed.id);
   joiningSession = false;
-  if(!s){ lastError='No session found with that code. Double-check it with your DM — codes are case-sensitive.'; render(); return; }
-  sessionCode = code; session = s; role='player'; playerName = name; view='player';
+  if(!s){ if(!lastError) lastError='No session found with that code.'; sharedToken=null; render(); return; }
+  sessionCode = parsed.id; session = s; role='player'; playerName = name; view='player';
   startPolling(); render();
 }
 
 function copySessionCode(){
+  const invite = makeInviteCode(sessionCode, sharedToken);
   if(navigator.clipboard && navigator.clipboard.writeText){
-    navigator.clipboard.writeText(sessionCode).then(()=>{
+    navigator.clipboard.writeText(invite).then(()=>{
       const btn = document.getElementById('copy-code-btn');
       if(btn){ const old = btn.textContent; btn.textContent='Copied!'; setTimeout(()=>{btn.textContent=old;},1500); }
     });
@@ -535,6 +618,7 @@ async function endCombat(){
 function leaveSession(){
   stopPolling();
   view='landing'; role=null; sessionCode=null; session=null; playerName=null; characterId=null;
+  sharedToken=null; lastEtag=null; anthropicKey=null;
   render();
 }
 
@@ -555,10 +639,10 @@ function renderHeader(){
     ${sessionCode ? `
     <div class="seal">
       <div>
-        <div class="label">Session Code — share with your party</div>
+        <div class="label">Gist ID (tap Copy for the full invite code)</div>
         <div class="code">${sessionCode}</div>
       </div>
-      <button class="ghost" id="copy-code-btn" onclick="copySessionCode()">Copy</button>
+      <button class="ghost" id="copy-code-btn" onclick="copySessionCode()">Copy Invite</button>
       <button class="ghost" onclick="toggleTvMode()">${tvMode ? '📺 TV: On' : '📺 TV Mode'}</button>
       <button class="ghost" onclick="leaveSession()">Leave</button>
     </div>` : ''}
@@ -607,18 +691,42 @@ function viewDMSetup(){
       <label>Setting &amp; Premise</label>
       <textarea id="f-setting" rows="5" placeholder="Describe the world, the tone, and how the adventure begins — e.g. 'A grim, low-magic frontier. The party has been hired to investigate disappearances near an abandoned watchtower.'"></textarea>
     </div>
-    <div class="row">
+    <div class="field">
+      <label>GitHub Personal Access Token (gist-only)</label>
+      <input id="f-token" type="password" placeholder="ghp_..." />
+    </div>
+    <div class="field">
+      <label>Anthropic API Key (optional — enables one-click AI narration)</label>
+      <input id="f-anthropic-key" type="password" placeholder="sk-ant-..." />
+    </div>
+    <div class="banner info" style="font-size:12.5px;line-height:1.6;">
+      Leave the Anthropic key blank to use the manual copy/paste-to-Claude workflow instead. If you add it,
+      this app calls Claude directly from your browser using your own key (usage is billed to your Anthropic
+      account, typically a fraction of a cent per scene) — get one at <b>console.anthropic.com</b>. It's kept
+      only in this browser tab and is never bundled into the invite code, so players never see it.
+    </div>
+    <div class="banner info" style="font-size:12.5px;line-height:1.6;">
+      This app stores the shared campaign in a GitHub Gist, so it needs a token to create/update it.
+      One-time setup: on GitHub, go to <b>Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token</b>,
+      check <b>only the "gist" scope</b>, and set a short expiry (a week is plenty). Paste it above — it's used only for direct calls
+      from this browser to GitHub, never sent anywhere else. This token gets bundled into the invite code you share with players,
+      so treat it like the session code itself and regenerate/revoke it after your campaign session.
+    </div>
+    <div class="row" style="margin-top:14px;">
       <button class="ghost" ${creatingSession?'disabled':''} onclick="view='landing'; render();">Back</button>
       <button class="primary" ${creatingSession?'disabled':''} onclick="handleCreate()">${creatingSession?'Founding the table…':'Found the Table'}</button>
     </div>
-    <p class="small" style="margin-top:14px;">Session data is shared with anyone who has the code — treat it like a link you'd hand to your players. Players don't need a Claude account; they can open this same file in any browser.</p>
   </div>`;
 }
 
 function handleCreate(){
   const name = document.getElementById('f-name').value.trim() || 'Untitled Campaign';
   const setting = document.getElementById('f-setting').value.trim() || 'A fantasy world awaiting its heroes.';
-  createSession(name, setting);
+  const token = document.getElementById('f-token').value.trim();
+  const aiKey = document.getElementById('f-anthropic-key').value.trim();
+  if(!token){ lastError='Paste a GitHub personal access token (gist scope) first — see the instructions above.'; render(); return; }
+  anthropicKey = aiKey || null;
+  createSession(name, setting, token);
 }
 
 function viewPlayerJoin(){
@@ -628,8 +736,8 @@ function viewPlayerJoin(){
     <h2>Join the Party</h2>
     ${renderBanners()}
     <div class="field">
-      <label>Session Code</label>
-      <input id="f-code" placeholder="ABCD" style="text-transform:uppercase;letter-spacing:0.15em;" maxlength="4" />
+      <label>Invite Code (from your DM)</label>
+      <textarea id="f-code" rows="3" placeholder="Paste the full invite code your DM sent you"></textarea>
     </div>
     <div class="field">
       <label>Your Name</label>
@@ -642,9 +750,9 @@ function viewPlayerJoin(){
   </div>`;
 }
 function handleJoin(){
-  const code = document.getElementById('f-code').value.trim().toUpperCase();
+  const code = document.getElementById('f-code').value.trim();
   const name = document.getElementById('f-pname').value.trim();
-  if(!code || !name){ lastError='Enter both a session code and your name.'; render(); return; }
+  if(!code || !name){ lastError='Paste the invite code and enter your name.'; render(); return; }
   joinAsPlayer(code, name);
 }
 
@@ -668,24 +776,39 @@ function storyEntryHTML(e){
 
 function renderStoryTab(isDM){
   const logHtml = session.log.map(storyEntryHTML).join('<hr class="rule"/>');
+  const thinking = generatingNarration ? `<div class="thinking"><span class="flame"></span><span class="flame"></span><span class="flame"></span> The Dungeon Master is weaving the next scene…</div>` : '';
   let controls = '';
   if(isDM){
     const kind = session.log.length<=1 ? 'open' : 'continue';
     const label = session.log.length<=1 ? 'Begin the Adventure' : (session.pendingActions.length ? `Resolve ${session.pendingActions.length} Pending Action(s)` : 'Continue the Story');
-    controls = `
-    <div class="card" style="margin-top:16px;background:var(--panel-2);">
-      <h2 style="font-size:13px;">Dungeon Master's Turn</h2>
-      <p class="hint" style="margin-bottom:12px;">This app can't call the AI directly from inside Claude, so it's a quick copy/paste: copy the prompt below, paste it to Claude in a normal chat, then paste the reply back in here.</p>
-      <div class="row">
-        <button class="primary" onclick="copyDMPrompt('${kind}')">${lastCopiedPrompt ? 'Copied ✓' : '1. Copy Prompt: ' + label}</button>
-        <button onclick="promptCustomDM()">Custom Instruction Instead</button>
-      </div>
-      <div class="field" style="margin-top:14px;">
-        <label>2. Paste Claude's Reply Here</label>
-        <textarea id="f-narration" rows="4" placeholder="Paste the Dungeon Master's narration once Claude replies..."></textarea>
-      </div>
-      <button class="primary" onclick="handlePostNarration()">3. Post to the Table</button>
-    </div>`;
+    if(anthropicKey){
+      controls = `
+      <div class="card" style="margin-top:16px;background:var(--panel-2);">
+        <h2 style="font-size:13px;">Dungeon Master's Turn</h2>
+        <div class="row">
+          <button class="primary" ${generatingNarration?'disabled':''} onclick="generateNarration('${kind}')">${generatingNarration ? 'Generating…' : label}</button>
+          <button ${generatingNarration?'disabled':''} onclick="promptCustomDM()">Custom Instruction</button>
+        </div>
+        ${thinking}
+        <p class="small" style="margin-top:10px;"><a class="link" onclick="anthropicKey=null; render();">Switch to manual copy/paste mode</a></p>
+      </div>`;
+    } else {
+      controls = `
+      <div class="card" style="margin-top:16px;background:var(--panel-2);">
+        <h2 style="font-size:13px;">Dungeon Master's Turn</h2>
+        <p class="hint" style="margin-bottom:12px;">No AI key set for this device — copy the prompt below, paste it to Claude in a normal chat, then paste the reply back in here.</p>
+        <div class="row">
+          <button class="primary" onclick="copyDMPrompt('${kind}')">${lastCopiedPrompt ? 'Copied ✓' : '1. Copy Prompt: ' + label}</button>
+          <button onclick="promptCustomDM()">Custom Instruction Instead</button>
+        </div>
+        <div class="field" style="margin-top:14px;">
+          <label>2. Paste Claude's Reply Here</label>
+          <textarea id="f-narration" rows="4" placeholder="Paste the Dungeon Master's narration once Claude replies..."></textarea>
+        </div>
+        <button class="primary" onclick="handlePostNarration()">3. Post to the Table</button>
+        <p class="small" style="margin-top:10px;"><a class="link" onclick="promptAddKey()">Add an Anthropic API key instead, for one-click narration</a></p>
+      </div>`;
+    }
   } else {
     controls = `
     <div class="field" style="margin-top:16px;">
@@ -700,9 +823,17 @@ function renderStoryTab(isDM){
   return `<div class="card"><div class="log" id="log-scroll">${logHtml}</div>${controls}</div>`;
 }
 
+function promptAddKey(){
+  const key = window.prompt('Paste your Anthropic API key (from console.anthropic.com):');
+  if(key && key.trim()){ anthropicKey = key.trim(); render(); }
+}
+
 function promptCustomDM(){
   const instr = window.prompt('Describe what should happen next (e.g. "Introduce a rival adventuring party"):');
-  if(instr && instr.trim()) copyDMPrompt(instr.trim());
+  if(instr && instr.trim()){
+    if(anthropicKey) generateNarration(instr.trim());
+    else copyDMPrompt(instr.trim());
+  }
 }
 
 function handlePostNarration(){
