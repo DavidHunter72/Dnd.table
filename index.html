@@ -294,12 +294,17 @@ async function kvGet(bucket){
 }
 
 async function kvSet(bucket, obj){
-  const res = await fetch(`${KVDB_BASE}/${bucket}/session`, {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(obj)
-  });
-  if(!res.ok) throw new Error('kv set failed: ' + res.status);
+  let res;
+  try{
+    res = await fetch(`${KVDB_BASE}/${bucket}/session`, {
+      method:'POST',
+      headers:{'Content-Type':'text/plain'},
+      body: JSON.stringify(obj)
+    });
+  }catch(networkErr){
+    throw new Error('NETWORK: ' + (networkErr && networkErr.message ? networkErr.message : 'request failed'));
+  }
+  if(!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
 }
 
 async function loadSession(code){
@@ -312,7 +317,7 @@ async function saveSession(code, obj){
   try{
     await kvSet(code, obj);
     return true;
-  }catch(e){ lastError = 'Could not sync — check your internet connection and try again.'; return false; }
+  }catch(e){ lastError = 'Could not sync — ' + (e && e.message ? e.message : 'unknown error'); return false; }
 }
 
 async function refreshFromRemote(){
