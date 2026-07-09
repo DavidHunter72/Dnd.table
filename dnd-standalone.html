@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Reckoning Table — AI Dungeon Master</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Cinzel+Decorative:wght@700;900&family=Crimson+Pro:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --void:#100E19;
+    --panel:#1B1830;
+    --panel-2:#241F3D;
+    --line: rgba(201,162,39,0.22);
+    --gold:#C9A227;
+    --gold-bright:#E9C766;
+    --crimson:#8C2A36;
+    --crimson-bright:#B23A47;
+    --parchment:#EDE6D3;
+    --ink:#E9E4D8;
+    --muted:#9994A8;
+    --emerald:#3E7C5A;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    background: radial-gradient(1200px 800px at 15% -10%, #211c3a 0%, var(--void) 55%), var(--void);
+    color:var(--ink);
+    font-family:'Crimson Pro', serif;
+    font-size:16px;
+    min-height:100vh;
+  }
+  h1,h2,h3,.display{
+    font-family:'Cinzel', serif;
+    letter-spacing:0.03em;
+  }
+  #app{max-width:1180px;margin:0 auto;padding:20px 18px 60px;}
+
+  /* ---------- Header ---------- */
+  .top{
+    display:flex;align-items:center;justify-content:space-between;
+    gap:16px;flex-wrap:wrap;
+    padding-bottom:18px;margin-bottom:22px;
+    border-bottom:1px solid var(--line);
+  }
+  .brand{display:flex;align-items:center;gap:14px;}
+  .brand .glyph{
+    width:44px;height:44px;border-radius:50%;
+    border:2px solid var(--gold);
+    display:flex;align-items:center;justify-content:center;
+    font-family:'Cinzel Decorative';color:var(--gold);font-size:20px;
+    box-shadow: inset 0 0 0 3px rgba(0,0,0,0.35), 0 0 18px rgba(201,162,39,0.18);
+    flex-shrink:0;
+  }
+  .brand h1{font-size:21px;margin:0;color:var(--parchment);font-weight:700;}
+  .brand .sub{font-size:12.5px;color:var(--muted);margin-top:2px;letter-spacing:0.08em;text-transform:uppercase;}
+  .seal{
+    display:flex;align-items:center;gap:10px;
+    background:var(--panel);border:1px solid var(--line);
+    padding:8px 14px;border-radius:8px;
+  }
+  .seal .code{
+    font-family:'Cinzel';font-weight:700;letter-spacing:0.18em;color:var(--gold-bright);font-size:17px;
+  }
+  .seal .label{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.12em;}
+
+  /* ---------- Buttons / inputs ---------- */
+  button{
+    font-family:'Cinzel', serif;font-size:13px;letter-spacing:0.04em;
+    background:var(--panel-2);color:var(--parchment);
+    border:1px solid var(--line);border-radius:7px;
+    padding:10px 16px;cursor:pointer;transition:all .15s ease;
+    text-transform:uppercase;
+  }
+  button:hover:not(:disabled){border-color:var(--gold);color:var(--gold-bright);background:#2A2447;}
+  button:disabled{opacity:0.45;cursor:not-allowed;}
+  button.primary{background:linear-gradient(180deg, #3a2f5c, #241f3d);border-color:var(--gold);color:var(--gold-bright);}
+  button.primary:hover:not(:disabled){box-shadow:0 0 0 1px var(--gold), 0 0 20px rgba(201,162,39,0.25);}
+  button.danger{border-color:var(--crimson);color:#e8a5ab;}
+  button.danger:hover{background:#3a1e22;color:#ffb9c0;}
+  button.ghost{background:transparent;border-color:transparent;color:var(--muted);padding:6px 8px;}
+  button.ghost:hover{color:var(--gold-bright);}
+
+  input, textarea, select{
+    font-family:'Crimson Pro', serif;font-size:15px;
+    background:#171429;color:var(--ink);
+    border:1px solid var(--line);border-radius:7px;
+    padding:9px 12px;width:100%;
+  }
+  input:focus, textarea:focus, select:focus{outline:none;border-color:var(--gold);}
+  label{font-size:11.5px;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);display:block;margin-bottom:5px;}
+  .field{margin-bottom:14px;}
+  .row{display:flex;gap:12px;flex-wrap:wrap;}
+  .row > *{flex:1;min-width:120px;}
+
+  /* ---------- Cards / panels ---------- */
+  .card{
+    background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:20px;margin-bottom:16px;
+  }
+  .card h2{font-size:15px;margin:0 0 14px;color:var(--gold-bright);}
+  .hint{color:var(--muted);font-size:13.5px;line-height:1.5;}
+
+  /* ---------- Landing ---------- */
+  .landing-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:30px;}
+  @media(max-width:720px){.landing-grid{grid-template-columns:1fr;}}
+  .choice-card{
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:26px;
+    cursor:pointer;transition:all .18s ease;
+  }
+  .choice-card:hover{border-color:var(--gold);transform:translateY(-2px);box-shadow:0 8px 30px rgba(0,0,0,0.35);}
+  .choice-card .glyph2{font-family:'Cinzel Decorative';font-size:30px;color:var(--gold);margin-bottom:10px;}
+  .choice-card h3{margin:0 0 8px;color:var(--parchment);font-size:18px;}
+  .choice-card p{color:var(--muted);font-size:14px;line-height:1.5;margin:0;}
+
+  /* ---------- Tabs ---------- */
+  .tabs{display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+  .tab{
+    padding:10px 16px;font-family:'Cinzel';font-size:12.5px;text-transform:uppercase;letter-spacing:0.06em;
+    color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;
+  }
+  .tab.active{color:var(--gold-bright);border-color:var(--gold);}
+
+  /* ---------- Story log ---------- */
+  .log{max-height:520px;overflow-y:auto;padding-right:6px;}
+  .log::-webkit-scrollbar{width:8px;}
+  .log::-webkit-scrollbar-thumb{background:var(--panel-2);border-radius:4px;}
+  .entry{margin-bottom:18px;}
+  .entry .meta{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;}
+  .entry.dm .body{display:flex;gap:12px;}
+  .dropcap{
+    font-family:'Cinzel Decorative';font-size:44px;line-height:1;color:var(--gold);
+    flex-shrink:0;width:44px;text-align:center;padding-top:2px;
+  }
+  .entry.dm .text{line-height:1.65;font-size:16px;color:var(--ink);}
+  .entry.player .text{background:var(--panel-2);border-left:3px solid var(--gold);padding:10px 14px;border-radius:0 8px 8px 0;font-style:italic;color:var(--parchment);}
+  .entry.roll .text{color:var(--gold-bright);font-family:'Cinzel';font-size:13.5px;}
+  .entry.system .text{color:var(--muted);font-size:13px;text-align:center;}
+  .rule{border:none;border-top:1px solid var(--line);margin:26px 0;}
+
+  /* ---------- Party ---------- */
+  .party-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px;}
+  .pc{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px;}
+  .pc .name{font-family:'Cinzel';font-size:15px;color:var(--parchment);}
+  .pc .cls{font-size:12px;color:var(--muted);margin-bottom:10px;}
+  .bar-track{background:#0e0c1a;border-radius:5px;height:8px;overflow:hidden;margin:4px 0 8px;}
+  .bar-fill{height:100%;background:linear-gradient(90deg, var(--crimson), var(--crimson-bright));}
+  .pc .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;font-size:11.5px;text-align:center;color:var(--muted);margin-top:8px;}
+  .pc .stats div b{display:block;color:var(--gold-bright);font-size:14px;}
+  .unclaimed{border-style:dashed;color:var(--muted);display:flex;align-items:center;justify-content:center;min-height:120px;font-size:13px;text-align:center;}
+
+  /* ---------- Dice ---------- */
+  .dice-quick{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+  .dice-result{
+    text-align:center;padding:26px;background:var(--panel-2);border-radius:10px;border:1px solid var(--line);
+  }
+  .dice-result .num{font-family:'Cinzel Decorative';font-size:52px;color:var(--gold-bright);}
+  .dice-result .expr{color:var(--muted);font-size:13px;margin-top:4px;}
+
+  /* ---------- Combat ---------- */
+  .combatant{
+    display:flex;align-items:center;justify-content:space-between;
+    background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:8px;
+  }
+  .combatant.current{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold) inset;}
+  .init-badge{
+    width:32px;height:32px;border-radius:50%;background:var(--void);border:1px solid var(--gold);
+    display:flex;align-items:center;justify-content:center;font-family:'Cinzel';color:var(--gold-bright);font-size:13px;
+  }
+
+  .thinking{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13.5px;font-style:italic;padding:10px 0;}
+  .flame{width:8px;height:8px;border-radius:50%;background:var(--gold);animation:flicker 1s infinite ease-in-out;}
+  .flame:nth-child(2){animation-delay:.15s;} .flame:nth-child(3){animation-delay:.3s;}
+  @keyframes flicker{0%,100%{opacity:.3;transform:scale(0.8);}50%{opacity:1;transform:scale(1.1);}}
+
+  .banner{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:14px;border:1px solid;}
+  .banner.warn{background:rgba(140,42,54,0.15);border-color:var(--crimson);color:#f0b8bd;}
+  .banner.info{background:rgba(201,162,39,0.1);border-color:var(--gold);color:var(--gold-bright);}
+
+  .small{font-size:12px;color:var(--muted);}
+  a.link{color:var(--gold-bright);cursor:pointer;text-decoration:underline;}
+
+  /* ---------- TV Mode ---------- */
+  #app.tv-mode{color:#F6F3E9;}
+  #app.tv-mode .brand h1{font-size:30px;}
+  #app.tv-mode .brand .sub{font-size:15px;}
+  #app.tv-mode .seal .code{font-size:28px;}
+  #app.tv-mode .seal .label{font-size:13px;}
+  #app.tv-mode .card h2{font-size:19px;}
+  #app.tv-mode .hint{font-size:17px;line-height:1.6;}
+  #app.tv-mode button{font-size:16px;padding:14px 22px;}
+  #app.tv-mode .tab{font-size:16px;padding:14px 22px;}
+  #app.tv-mode .log{max-height:640px;}
+  #app.tv-mode .entry .meta{font-size:13px;}
+  #app.tv-mode .entry.dm .text{font-size:23px;line-height:1.7;color:#F6F3E9;}
+  #app.tv-mode .dropcap{font-size:60px;width:60px;}
+  #app.tv-mode .entry.player .text{font-size:20px;}
+  #app.tv-mode .entry.roll .text{font-size:17px;}
+  #app.tv-mode .pc .name{font-size:19px;}
+  #app.tv-mode .pc .cls, #app.tv-mode .pc .small{font-size:15px;}
+  #app.tv-mode .pc .stats{font-size:14px;}
+  #app.tv-mode .pc .stats div b{font-size:17px;}
+  #app.tv-mode input, #app.tv-mode textarea, #app.tv-mode select{font-size:18px;padding:12px 14px;}
+  #app.tv-mode label{font-size:13px;}
+  #app.tv-mode .dice-result .num{font-size:64px;}
+  #app.tv-mode .combatant{padding:14px 18px;}
+  #app.tv-mode .init-badge{width:38px;height:38px;font-size:15px;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* ============================= STATE ============================= */
+let view = 'landing'; // landing | dm-setup | dm | player-join | player
+let role = null;
+let sessionCode = null;
+let playerName = null;
+let characterId = null;
+let session = null; // synced object
+let activeTab = 'story';
+let pollHandle = null;
+let generating = false;
+let creatingSession = false;
+let joiningSession = false;
+let lastError = null;
+let tvMode = false;
+
+function toggleTvMode(){ tvMode = !tvMode; render(); }
+
+const CLASSES = ['Fighter','Wizard','Rogue','Cleric','Ranger','Barbarian','Bard','Druid','Paladin','Sorcerer','Warlock','Monk'];
+const RACES = ['Human','Elf','Dwarf','Halfling','Half-Orc','Tiefling','Dragonborn','Gnome'];
+
+function uid(){ return Math.random().toString(36).slice(2,10); }
+function now(){ return Date.now(); }
+
+function genCode(){
+  const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  let c = '';
+  for(let i=0;i<4;i++) c += letters[Math.floor(Math.random()*letters.length)];
+  return c;
+}
+
+function freshSession(campaignName, setting){
+  return {
+    version: 1,
+    campaignName,
+    setting,
+    party: [],
+    log: [{id: uid(), type:'system', author:'The Table', text:`The campaign "${campaignName}" is ready. The Dungeon Master may begin the tale.`, ts: now()}],
+    pendingActions: [],
+    combat: {active:false, order:[], turnIndex:0},
+    updatedAt: now()
+  };
+}
+
+/* ============================= STORAGE (kvdb.io) =============================
+   Syncs across devices using kvdb.io, a free public key-value store, so this
+   works in any ordinary browser without a Claude account. Each campaign gets
+   its own "bucket" (the session code); the full session state is stored as
+   JSON under one key inside that bucket. */
+const KVDB_BASE = 'https://kvdb.io';
+const POLL_MS = 20000; // conservative, to stay within kvdb.io's shared rate limit
+
+async function kvCreateBucket(){
+  let res;
+  try{
+    res = await fetch(KVDB_BASE + '/', {
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'email=dm@reckoning-table.local'
+    });
+  }catch(networkErr){
+    throw new Error('NETWORK: request never reached kvdb.io (likely blocked, offline, or a CORS/network policy issue). ' + (networkErr && networkErr.message ? networkErr.message : ''));
+  }
+  if(!res.ok){
+    let bodyTxt = '';
+    try{ bodyTxt = await res.text(); }catch(e){}
+    throw new Error(`HTTP ${res.status} ${res.statusText} — ${bodyTxt.slice(0,120)}`);
+  }
+  const id = (await res.text()).trim();
+  if(!id) throw new Error('kvdb.io returned an empty bucket id');
+  return id;
+}
+
+async function kvGet(bucket){
+  const res = await fetch(`${KVDB_BASE}/${bucket}/session`, {cache:'no-store'});
+  if(res.status === 404) return null;
+  if(!res.ok) throw new Error('kv get failed: ' + res.status);
+  const text = await res.text();
+  if(!text) return null;
+  return JSON.parse(text);
+}
+
+async function kvSet(bucket, obj){
+  const res = await fetch(`${KVDB_BASE}/${bucket}/session`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(obj)
+  });
+  if(!res.ok) throw new Error('kv set failed: ' + res.status);
+}
+
+async function loadSession(code){
+  try{ return await kvGet(code); }
+  catch(e){ return null; }
+}
+async function saveSession(code, obj){
+  obj.updatedAt = now();
+  obj.version = (obj.version||0)+1;
+  try{
+    await kvSet(code, obj);
+    return true;
+  }catch(e){ lastError = 'Could not sync — check your internet connection and try again.'; return false; }
+}
+
+async function refreshFromRemote(){
+  if(!sessionCode) return;
+  try{
+    const remote = await loadSession(sessionCode);
+    if(remote && (!session || remote.version > session.version)){
+      session = remote;
+      render();
+    }
+  }catch(e){ /* silent — will retry on next poll */ }
+}
+function startPolling(){
+  stopPolling();
+  pollHandle = setInterval(refreshFromRemote, POLL_MS);
+}
+function stopPolling(){
+  if(pollHandle) clearInterval(pollHandle);
+  pollHandle = null;
+}
+
+/* ============================= DM NARRATION (manual bridge) =============================
+   kvdb.io (needed for cross-device sync) can't be reached from inside Claude's artifact
+   sandbox, so this app is meant to run in a normal browser tab for everyone, DM included.
+   That also means it can't silently call the Anthropic API for you. Instead: the DM builds
+   a prompt here, pastes it to Claude in a separate chat, and pastes the reply back in. */
+
+function buildDMPrompt(kind){
+  const partySummary = session.party.length
+    ? session.party.map(p=>`${p.name} — ${p.race} ${p.class}, Level ${p.level}, HP ${p.hp}/${p.maxHp}, AC ${p.ac}${p.playerName?` (played by ${p.playerName})`:' (unclaimed / NPC-controlled)'}`).join('\n')
+    : 'No adventurers have been added yet.';
+
+  const recentLog = session.log.slice(-18).map(e=>{
+    if(e.type==='dm') return `DM: ${e.text}`;
+    if(e.type==='player') return `${e.author}: ${e.text}`;
+    if(e.type==='roll') return `[roll] ${e.author}: ${e.text}`;
+    return `[${e.author}]: ${e.text}`;
+  }).join('\n');
+
+  const pending = session.pendingActions.map(a=>`${a.author}: ${a.text}`).join('\n');
+
+  let instruction;
+  if(kind === 'open'){
+    instruction = `Begin the campaign. Set the opening scene vividly and establish where the party is and what's immediately in front of them. End with a clear prompt inviting the party to act.`;
+  } else if(kind === 'continue'){
+    instruction = pending
+      ? `Resolve the following player actions in character order that makes narrative sense, describe consequences, and move the story forward:\n${pending}`
+      : `Continue the story with a new development, complication, or scene beat, since the party hasn't acted yet. Keep momentum.`;
+  } else {
+    instruction = kind;
+  }
+
+  return `You are an expert, impartial Dungeons & Dragons 5th Edition Dungeon Master running a live session for a real group of players. Campaign: "${session.campaignName}". Setting/premise: ${session.setting}.
+
+Rules for your narration:
+- Write vivid, concise scene narration (150-260 words), addressing the party directly.
+- Respect established facts from the story so far; never contradict prior events.
+- When outcomes are uncertain, state what roll would resolve it rather than deciding yourself, unless a roll result was already reported.
+- Track consequences: injuries, NPC reactions, environmental changes.
+- End with a clear hook, question, or set of options for what the party can do or see next.
+
+PARTY:
+${partySummary}
+
+STORY SO FAR (most recent):
+${recentLog || '(the story has not yet begun)'}
+
+DM INSTRUCTION:
+${instruction}`;
+}
+
+let lastCopiedPrompt = false;
+function copyDMPrompt(kind){
+  const prompt = buildDMPrompt(kind);
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(prompt).then(()=>{
+      lastCopiedPrompt = true; render();
+      setTimeout(()=>{ lastCopiedPrompt=false; render(); }, 4000);
+    }).catch(()=>{ window.prompt('Copy this prompt manually:', prompt); });
+  } else {
+    window.prompt('Copy this prompt manually:', prompt);
+  }
+}
+
+async function postDMNarration(text){
+  if(!text.trim()) return;
+  await refreshFromRemote();
+  session.log.push({id:uid(), type:'dm', author:'Dungeon Master', text: text.trim(), ts: now()});
+  session.pendingActions = [];
+  await saveSession(sessionCode, session);
+  render();
+}
+
+/* ============================= DICE ============================= */
+function rollDice(expr){
+  const m = expr.trim().toLowerCase().match(/^(\d*)d(\d+)\s*([+-]\s*\d+)?$/);
+  if(!m) return null;
+  const count = parseInt(m[1]||'1',10);
+  const sides = parseInt(m[2],10);
+  const mod = m[3] ? parseInt(m[3].replace(/\s/g,''),10) : 0;
+  if(count<1||count>20||sides<2||sides>100) return null;
+  let rolls = [];
+  for(let i=0;i<count;i++) rolls.push(1+Math.floor(Math.random()*sides));
+  const total = rolls.reduce((a,b)=>a+b,0)+mod;
+  return {expr, rolls, mod, total};
+}
+
+/* ============================= ACTIONS ============================= */
+async function createSession(campaignName, setting){
+  lastError = null;
+  creatingSession = true; render();
+  try{
+    sessionCode = await kvCreateBucket();
+    session = freshSession(campaignName, setting);
+    role = 'dm';
+    await saveSession(sessionCode, session);
+    view = 'dm';
+    startPolling();
+  }catch(e){
+    lastError = 'Could not create a session — ' + (e && e.message ? e.message : 'unknown error') + '. Try opening this file in a plain browser tab instead of inside Claude if the problem persists.';
+  }
+  creatingSession = false;
+  render();
+}
+
+async function joinAsDM(code){
+  joiningSession = true; lastError=null; render();
+  const s = await loadSession(code);
+  joiningSession = false;
+  if(!s){ lastError='No session found with that code.'; render(); return; }
+  sessionCode = code; session = s; role='dm'; view='dm';
+  startPolling(); render();
+}
+
+async function joinAsPlayer(code, name){
+  joiningSession = true; lastError=null; render();
+  const s = await loadSession(code);
+  joiningSession = false;
+  if(!s){ lastError='No session found with that code. Double-check it with your DM — codes are case-sensitive.'; render(); return; }
+  sessionCode = code; session = s; role='player'; playerName = name; view='player';
+  startPolling(); render();
+}
+
+function copySessionCode(){
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(sessionCode).then(()=>{
+      const btn = document.getElementById('copy-code-btn');
+      if(btn){ const old = btn.textContent; btn.textContent='Copied!'; setTimeout(()=>{btn.textContent=old;},1500); }
+    });
+  }
+}
+
+async function addOrClaimCharacter(charDraft){
+  await refreshFromRemote();
+  session.party.push(charDraft);
+  characterId = charDraft.id;
+  await saveSession(sessionCode, session);
+  render();
+}
+
+async function updateCharacter(id, patch){
+  await refreshFromRemote();
+  const pc = session.party.find(p=>p.id===id);
+  if(!pc) return;
+  Object.assign(pc, patch);
+  await saveSession(sessionCode, session);
+  render();
+}
+
+async function removeCharacter(id){
+  await refreshFromRemote();
+  session.party = session.party.filter(p=>p.id!==id);
+  await saveSession(sessionCode, session);
+  render();
+}
+
+async function submitPlayerAction(text){
+  if(!text.trim()) return;
+  await refreshFromRemote();
+  session.log.push({id:uid(), type:'player', author: playerName, text, ts: now()});
+  session.pendingActions.push({id:uid(), author: playerName, text, ts: now()});
+  await saveSession(sessionCode, session);
+  render();
+}
+
+async function postRoll(author, result){
+  await refreshFromRemote();
+  const detail = result.rolls.length>1 ? `[${result.rolls.join(', ')}]${result.mod?(result.mod>0?' +'+result.mod:' '+result.mod):''} = ` : (result.mod? `[${result.rolls[0]}]${result.mod>0?' +'+result.mod:' '+result.mod} = `:'');
+  session.log.push({id:uid(), type:'roll', author, text:`rolled ${result.expr} → ${detail}${result.total}`, ts: now()});
+  await saveSession(sessionCode, session);
+  render();
+}
+
+async function addCombatant(name, initiative){
+  await refreshFromRemote();
+  session.combat.order.push({id:uid(), name, initiative});
+  session.combat.order.sort((a,b)=>b.initiative-a.initiative);
+  session.combat.active = true;
+  await saveSession(sessionCode, session);
+  render();
+}
+async function nextTurn(){
+  await refreshFromRemote();
+  session.combat.turnIndex = (session.combat.turnIndex+1) % Math.max(session.combat.order.length,1);
+  await saveSession(sessionCode, session);
+  render();
+}
+async function endCombat(){
+  await refreshFromRemote();
+  session.combat = {active:false, order:[], turnIndex:0};
+  await saveSession(sessionCode, session);
+  render();
+}
+
+function leaveSession(){
+  stopPolling();
+  view='landing'; role=null; sessionCode=null; session=null; playerName=null; characterId=null;
+  render();
+}
+
+/* ============================= RENDER HELPERS ============================= */
+function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstElementChild; }
+function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function renderHeader(){
+  return `
+  <div class="top">
+    <div class="brand">
+      <div class="glyph">☥</div>
+      <div>
+        <h1>The Reckoning Table</h1>
+        <div class="sub">AI Dungeon Master</div>
+      </div>
+    </div>
+    ${sessionCode ? `
+    <div class="seal">
+      <div>
+        <div class="label">Session Code — share with your party</div>
+        <div class="code">${sessionCode}</div>
+      </div>
+      <button class="ghost" id="copy-code-btn" onclick="copySessionCode()">Copy</button>
+      <button class="ghost" onclick="toggleTvMode()">${tvMode ? '📺 TV: On' : '📺 TV Mode'}</button>
+      <button class="ghost" onclick="leaveSession()">Leave</button>
+    </div>` : ''}
+  </div>`;
+}
+
+function renderBanners(){
+  let html = '';
+  if(lastError) html += `<div class="banner warn">${esc(lastError)}</div>`;
+  return html;
+}
+
+/* ============================= VIEWS ============================= */
+function viewLanding(){
+  return `
+  ${renderHeader()}
+  <div class="card">
+    <p class="hint">A shared table for your group: everyone opens this same file in a normal browser (no Claude account needed) and the story syncs across devices roughly every 20 seconds. The Dungeon Master narrates by copying a prompt from here, pasting it into a Claude chat, and pasting the reply back in — or by typing narration by hand.</p>
+  </div>
+  ${renderBanners()}
+  <div class="landing-grid">
+    <div class="choice-card" onclick="view='dm-setup'; render();">
+      <div class="glyph2">⚔</div>
+      <h3>Run a Campaign</h3>
+      <p>Start a new session as Dungeon Master. You'll get a code to share with your players.</p>
+    </div>
+    <div class="choice-card" onclick="view='player-join'; render();">
+      <div class="glyph2">🕯</div>
+      <h3>Join a Party</h3>
+      <p>Enter the session code your Dungeon Master gave you to join the adventure.</p>
+    </div>
+  </div>`;
+}
+
+function viewDMSetup(){
+  return `
+  ${renderHeader()}
+  <div class="card" style="max-width:640px;margin:0 auto;">
+    <h2>Found Your Campaign</h2>
+    ${renderBanners()}
+    <div class="field">
+      <label>Campaign Name</label>
+      <input id="f-name" placeholder="The Ashes of Kaldrun Keep" />
+    </div>
+    <div class="field">
+      <label>Setting &amp; Premise</label>
+      <textarea id="f-setting" rows="5" placeholder="Describe the world, the tone, and how the adventure begins — e.g. 'A grim, low-magic frontier. The party has been hired to investigate disappearances near an abandoned watchtower.'"></textarea>
+    </div>
+    <div class="row">
+      <button class="ghost" ${creatingSession?'disabled':''} onclick="view='landing'; render();">Back</button>
+      <button class="primary" ${creatingSession?'disabled':''} onclick="handleCreate()">${creatingSession?'Founding the table…':'Found the Table'}</button>
+    </div>
+    <p class="small" style="margin-top:14px;">Session data is shared with anyone who has the code — treat it like a link you'd hand to your players. Players don't need a Claude account; they can open this same file in any browser.</p>
+  </div>`;
+}
+
+function handleCreate(){
+  const name = document.getElementById('f-name').value.trim() || 'Untitled Campaign';
+  const setting = document.getElementById('f-setting').value.trim() || 'A fantasy world awaiting its heroes.';
+  createSession(name, setting);
+}
+
+function viewPlayerJoin(){
+  return `
+  ${renderHeader()}
+  <div class="card" style="max-width:480px;margin:0 auto;">
+    <h2>Join the Party</h2>
+    ${renderBanners()}
+    <div class="field">
+      <label>Session Code</label>
+      <input id="f-code" placeholder="ABCD" style="text-transform:uppercase;letter-spacing:0.15em;" maxlength="4" />
+    </div>
+    <div class="field">
+      <label>Your Name</label>
+      <input id="f-pname" placeholder="e.g. Sarah" />
+    </div>
+    <div class="row">
+      <button class="ghost" ${joiningSession?'disabled':''} onclick="view='landing'; render();">Back</button>
+      <button class="primary" ${joiningSession?'disabled':''} onclick="handleJoin()">${joiningSession?'Joining…':'Join'}</button>
+    </div>
+  </div>`;
+}
+function handleJoin(){
+  const code = document.getElementById('f-code').value.trim().toUpperCase();
+  const name = document.getElementById('f-pname').value.trim();
+  if(!code || !name){ lastError='Enter both a session code and your name.'; render(); return; }
+  joinAsPlayer(code, name);
+}
+
+function storyEntryHTML(e){
+  if(e.type==='dm'){
+    const first = e.text.charAt(0);
+    const rest = e.text.slice(1);
+    return `<div class="entry dm">
+      <div class="meta">Dungeon Master</div>
+      <div class="body"><div class="dropcap">${esc(first)}</div><div class="text">${esc(rest)}</div></div>
+    </div>`;
+  }
+  if(e.type==='player'){
+    return `<div class="entry player"><div class="meta">${esc(e.author)}</div><div class="text">${esc(e.text)}</div></div>`;
+  }
+  if(e.type==='roll'){
+    return `<div class="entry roll"><div class="text">🎲 ${esc(e.author)} ${esc(e.text)}</div></div>`;
+  }
+  return `<div class="entry system"><div class="text">— ${esc(e.text)} —</div></div>`;
+}
+
+function renderStoryTab(isDM){
+  const logHtml = session.log.map(storyEntryHTML).join('<hr class="rule"/>');
+  let controls = '';
+  if(isDM){
+    const kind = session.log.length<=1 ? 'open' : 'continue';
+    const label = session.log.length<=1 ? 'Begin the Adventure' : (session.pendingActions.length ? `Resolve ${session.pendingActions.length} Pending Action(s)` : 'Continue the Story');
+    controls = `
+    <div class="card" style="margin-top:16px;background:var(--panel-2);">
+      <h2 style="font-size:13px;">Dungeon Master's Turn</h2>
+      <p class="hint" style="margin-bottom:12px;">This app can't call the AI directly from inside Claude, so it's a quick copy/paste: copy the prompt below, paste it to Claude in a normal chat, then paste the reply back in here.</p>
+      <div class="row">
+        <button class="primary" onclick="copyDMPrompt('${kind}')">${lastCopiedPrompt ? 'Copied ✓' : '1. Copy Prompt: ' + label}</button>
+        <button onclick="promptCustomDM()">Custom Instruction Instead</button>
+      </div>
+      <div class="field" style="margin-top:14px;">
+        <label>2. Paste Claude's Reply Here</label>
+        <textarea id="f-narration" rows="4" placeholder="Paste the Dungeon Master's narration once Claude replies..."></textarea>
+      </div>
+      <button class="primary" onclick="handlePostNarration()">3. Post to the Table</button>
+    </div>`;
+  } else {
+    controls = `
+    <div class="field" style="margin-top:16px;">
+      <label>What do you do?</label>
+      <div class="row">
+        <input id="f-action" placeholder="I search the room for traps..." onkeydown="if(event.key==='Enter'){handlePlayerAction();}" />
+        <button class="primary" style="flex:0 0 auto;" onclick="handlePlayerAction()">Send</button>
+      </div>
+    </div>
+    ${session.pendingActions.some(a=>a.author===playerName) ? '<p class="small">Your action is queued — waiting on the Dungeon Master.</p>' : ''}`;
+  }
+  return `<div class="card"><div class="log" id="log-scroll">${logHtml}</div>${controls}</div>`;
+}
+
+function promptCustomDM(){
+  const instr = window.prompt('Describe what should happen next (e.g. "Introduce a rival adventuring party"):');
+  if(instr && instr.trim()) copyDMPrompt(instr.trim());
+}
+
+function handlePostNarration(){
+  const ta = document.getElementById('f-narration');
+  const val = ta.value;
+  ta.value = '';
+  postDMNarration(val);
+}
+
+function handlePlayerAction(){
+  const inp = document.getElementById('f-action');
+  const val = inp.value;
+  inp.value='';
+  submitPlayerAction(val);
+}
+
+function pcCardHTML(p, isDM){
+  const hpPct = Math.max(0, Math.min(100, (p.hp/p.maxHp)*100));
+  return `
+  <div class="pc">
+    <div class="name">${esc(p.name)}</div>
+    <div class="cls">${esc(p.race)} ${esc(p.class)} · Lv ${p.level} ${p.playerName? '· '+esc(p.playerName): '· NPC/paper'}</div>
+    <div class="small">HP ${p.hp}/${p.maxHp} &nbsp;·&nbsp; AC ${p.ac}</div>
+    <div class="bar-track"><div class="bar-fill" style="width:${hpPct}%"></div></div>
+    <div class="stats">
+      <div><b>${p.abilities.str}</b>STR</div><div><b>${p.abilities.dex}</b>DEX</div><div><b>${p.abilities.con}</b>CON</div>
+      <div><b>${p.abilities.int}</b>INT</div><div><b>${p.abilities.wis}</b>WIS</div><div><b>${p.abilities.cha}</b>CHA</div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <button class="ghost" onclick="adjustHP('${p.id}', -1)">HP −</button>
+      <button class="ghost" onclick="adjustHP('${p.id}', 1)">HP +</button>
+      ${isDM ? `<button class="ghost" onclick="removeCharacter('${p.id}')">Remove</button>` : ''}
+    </div>
+  </div>`;
+}
+
+function adjustHP(id, dir){
+  const step = window.prompt(dir>0 ? 'Heal how many HP?' : 'Damage how many HP?', '1');
+  const n = parseInt(step,10);
+  if(!n || n<0) return;
+  const pc = session.party.find(p=>p.id===id);
+  if(!pc) return;
+  const newHp = Math.max(0, Math.min(pc.maxHp, pc.hp + (dir>0? n : -n)));
+  updateCharacter(id, {hp:newHp});
+}
+
+function renderPartyTab(isDM){
+  const canClaim = role==='player' && !session.party.some(p=>p.playerName===playerName);
+  return `
+  <div class="card">
+    <h2>The Party</h2>
+    <div class="party-grid">
+      ${session.party.map(p=>pcCardHTML(p,isDM)).join('')}
+      ${(isDM || canClaim) ? `<div class="pc unclaimed" style="cursor:pointer;" onclick="openCharacterForm()">+ Add ${isDM?'a character (paper or player)':'your character'}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+function openCharacterForm(){
+  const wrap = document.getElementById('char-form-slot');
+  if(!wrap) return;
+  wrap.innerHTML = `
+  <div class="card">
+    <h2>New Character</h2>
+    <div class="row">
+      <div class="field"><label>Name</label><input id="c-name" /></div>
+      <div class="field"><label>${role==='dm'?'Player Name (blank = paper/NPC)':'Your Name'}</label><input id="c-player" value="${role==='player'?esc(playerName):''}" ${role==='player'?'readonly':''} /></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Race</label><select id="c-race">${RACES.map(r=>`<option>${r}</option>`).join('')}</select></div>
+      <div class="field"><label>Class</label><select id="c-class">${CLASSES.map(c=>`<option>${c}</option>`).join('')}</select></div>
+      <div class="field"><label>Level</label><input id="c-level" type="number" value="1" min="1" max="20" /></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Max HP</label><input id="c-hp" type="number" value="10" /></div>
+      <div class="field"><label>AC</label><input id="c-ac" type="number" value="12" /></div>
+    </div>
+    <div class="row">
+      ${['str','dex','con','int','wis','cha'].map(a=>`<div class="field"><label>${a.toUpperCase()}</label><input id="c-${a}" type="number" value="10" /></div>`).join('')}
+    </div>
+    <div class="row">
+      <button class="ghost" onclick="document.getElementById('char-form-slot').innerHTML=''">Cancel</button>
+      <button class="primary" onclick="submitCharacterForm()">Save Character</button>
+    </div>
+  </div>`;
+}
+
+function submitCharacterForm(){
+  const name = document.getElementById('c-name').value.trim();
+  if(!name){ alert('Give your character a name.'); return; }
+  const draft = {
+    id: uid(),
+    name,
+    playerName: document.getElementById('c-player').value.trim() || null,
+    race: document.getElementById('c-race').value,
+    class: document.getElementById('c-class').value,
+    level: parseInt(document.getElementById('c-level').value,10)||1,
+    hp: parseInt(document.getElementById('c-hp').value,10)||10,
+    maxHp: parseInt(document.getElementById('c-hp').value,10)||10,
+    ac: parseInt(document.getElementById('c-ac').value,10)||12,
+    abilities: {
+      str: parseInt(document.getElementById('c-str').value,10)||10,
+      dex: parseInt(document.getElementById('c-dex').value,10)||10,
+      con: parseInt(document.getElementById('c-con').value,10)||10,
+      int: parseInt(document.getElementById('c-int').value,10)||10,
+      wis: parseInt(document.getElementById('c-wis').value,10)||10,
+      cha: parseInt(document.getElementById('c-cha').value,10)||10,
+    }
+  };
+  addOrClaimCharacter(draft);
+  document.getElementById('char-form-slot').innerHTML='';
+}
+
+function renderDiceTab(){
+  return `
+  <div class="card">
+    <h2>Dice</h2>
+    <div class="dice-quick">
+      ${['d4','d6','d8','d10','d12','d20','d100'].map(d=>`<button onclick="quickRoll('${d}')">${d}</button>`).join('')}
+    </div>
+    <div class="row">
+      <input id="f-dice" placeholder="e.g. 2d6+3" />
+      <button class="primary" style="flex:0 0 auto;" onclick="customRoll()">Roll</button>
+    </div>
+    <div id="dice-result" style="margin-top:16px;"></div>
+  </div>`;
+}
+function quickRoll(expr){ doRoll(expr); }
+function customRoll(){ const v = document.getElementById('f-dice').value; if(v) doRoll(v); }
+function doRoll(expr){
+  const r = rollDice(expr);
+  const box = document.getElementById('dice-result');
+  if(!r){ box.innerHTML = `<div class="banner warn">Couldn't parse "${esc(expr)}". Try formats like d20, 2d6, 1d8+3.</div>`; return; }
+  box.innerHTML = `<div class="dice-result"><div class="num">${r.total}</div><div class="expr">${esc(r.expr)} ${r.rolls.length>1?`[${r.rolls.join(', ')}]`:''}${r.mod?(r.mod>0?' +'+r.mod:' '+r.mod):''}</div></div>`;
+  const author = role==='dm' ? 'Dungeon Master' : playerName;
+  postRoll(author, r);
+}
+
+function renderCombatTab(isDM){
+  const order = session.combat.order;
+  return `
+  <div class="card">
+    <h2>Initiative Tracker</h2>
+    ${order.length===0 ? '<p class="hint">No combatants yet.</p>' : order.map((c,i)=>`
+      <div class="combatant ${i===session.combat.turnIndex?'current':''}">
+        <div style="display:flex;align-items:center;gap:10px;"><div class="init-badge">${c.initiative}</div><div>${esc(c.name)}</div></div>
+        ${i===session.combat.turnIndex ? '<span class="small" style="color:var(--gold-bright);">CURRENT TURN</span>':''}
+      </div>`).join('')}
+    ${isDM ? `
+    <div class="row" style="margin-top:14px;">
+      <input id="cb-name" placeholder="Name" />
+      <input id="cb-init" type="number" placeholder="Initiative" style="max-width:120px;" />
+      <button onclick="handleAddCombatant()">Add</button>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <button class="primary" ${order.length===0?'disabled':''} onclick="nextTurn()">Next Turn</button>
+      <button class="danger" onclick="endCombat()">End Combat</button>
+    </div>` : '<p class="small">Only the Dungeon Master can edit initiative.</p>'}
+  </div>`;
+}
+function handleAddCombatant(){
+  const name = document.getElementById('cb-name').value.trim();
+  const init = parseInt(document.getElementById('cb-init').value,10);
+  if(!name || isNaN(init)) return;
+  addCombatant(name, init);
+}
+
+function viewSession(isDM){
+  const tabs = isDM ? ['story','party','dice','combat'] : ['story','party','dice','combat'];
+  const labels = {story:'Story', party:'Party', dice:'Dice', combat:'Combat'};
+  let body = '';
+  if(activeTab==='story') body = renderStoryTab(isDM);
+  else if(activeTab==='party') body = renderPartyTab(isDM) + `<div id="char-form-slot"></div>`;
+  else if(activeTab==='dice') body = renderDiceTab();
+  else if(activeTab==='combat') body = renderCombatTab(isDM);
+
+  return `
+  ${renderHeader()}
+  <div class="card" style="margin-bottom:14px;">
+    <h2 style="margin-bottom:4px;">${esc(session.campaignName)}</h2>
+    <p class="hint" style="margin:0;">${esc(session.setting)}</p>
+  </div>
+  ${renderBanners()}
+  <div class="tabs">
+    ${tabs.map(t=>`<div class="tab ${activeTab===t?'active':''}" onclick="activeTab='${t}'; render();">${labels[t]}</div>`).join('')}
+  </div>
+  ${body}
+  `;
+}
+
+/* ============================= MAIN RENDER ============================= */
+function render(){
+  const app = document.getElementById('app');
+  let html = '';
+  if(view==='landing') html = viewLanding();
+  else if(view==='dm-setup') html = viewDMSetup();
+  else if(view==='player-join') html = viewPlayerJoin();
+  else if(view==='dm') html = viewSession(true);
+  else if(view==='player') html = viewSession(false);
+  app.innerHTML = html;
+  app.className = tvMode ? 'tv-mode' : '';
+
+  const logEl = document.getElementById('log-scroll');
+  if(logEl) logEl.scrollTop = logEl.scrollHeight;
+}
+
+render();
+</script>
+</body>
+</html>
