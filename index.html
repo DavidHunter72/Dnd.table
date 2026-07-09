@@ -228,6 +228,7 @@ let lastError = null;
 let tvMode = false;
 let anthropicKey = null; // DM's own key, kept in this browser only, never synced to the gist
 let generatingNarration = false;
+let prefilledInviteCode = null;
 
 function toggleTvMode(){ tvMode = !tvMode; render(); }
 
@@ -553,6 +554,17 @@ function copySessionCode(){
   }
 }
 
+function copyJoinLink(){
+  const invite = makeInviteCode(sessionCode, sharedToken);
+  const link = `${location.origin}${location.pathname}?join=${encodeURIComponent(invite)}`;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(link).then(()=>{
+      const btn = document.getElementById('copy-link-btn');
+      if(btn){ const old = btn.textContent; btn.textContent='Copied!'; setTimeout(()=>{btn.textContent=old;},1500); }
+    });
+  }
+}
+
 async function addOrClaimCharacter(charDraft){
   await refreshFromRemote();
   session.party.push(charDraft);
@@ -643,6 +655,7 @@ function renderHeader(){
         <div class="code">${sessionCode}</div>
       </div>
       <button class="ghost" id="copy-code-btn" onclick="copySessionCode()">Copy Invite</button>
+      <button class="ghost" id="copy-link-btn" onclick="copyJoinLink()">Copy Join Link</button>
       <button class="ghost" onclick="toggleTvMode()">${tvMode ? '📺 TV: On' : '📺 TV Mode'}</button>
       <button class="ghost" onclick="leaveSession()">Leave</button>
     </div>` : ''}
@@ -735,9 +748,10 @@ function viewPlayerJoin(){
   <div class="card" style="max-width:480px;margin:0 auto;">
     <h2>Join the Party</h2>
     ${renderBanners()}
+    ${prefilledInviteCode ? '<p class="small" style="margin-bottom:10px;">Invite code filled in from your link — just add your name.</p>' : ''}
     <div class="field">
       <label>Invite Code (from your DM)</label>
-      <textarea id="f-code" rows="3" placeholder="Paste the full invite code your DM sent you"></textarea>
+      <textarea id="f-code" rows="3" placeholder="Paste the full invite code your DM sent you">${prefilledInviteCode ? esc(prefilledInviteCode) : ''}</textarea>
     </div>
     <div class="field">
       <label>Your Name</label>
@@ -1039,6 +1053,18 @@ function render(){
   const logEl = document.getElementById('log-scroll');
   if(logEl) logEl.scrollTop = logEl.scrollHeight;
 }
+
+(function checkJoinLink(){
+  try{
+    const params = new URLSearchParams(window.location.search);
+    const j = params.get('join');
+    if(j){
+      prefilledInviteCode = decodeURIComponent(j);
+      view = 'player-join';
+      history.replaceState(null, '', window.location.pathname);
+    }
+  }catch(e){ /* ignore malformed links */ }
+})();
 
 render();
 </script>
