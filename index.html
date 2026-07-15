@@ -226,12 +226,29 @@ let creatingSession = false;
 let joiningSession = false;
 let lastError = null;
 let tvMode = false;
+let narrateAloud = true;
+let lastSpokenEntryId = null;
 let anthropicKey = null; // DM's own key, kept in this browser only, never synced to the gist
 let generatingNarration = false;
 let prefilledInviteCode = null;
 let openBackstoryId = null;
 
 function toggleTvMode(){ tvMode = !tvMode; render(); }
+function toggleNarrate(){
+  narrateAloud = !narrateAloud;
+  if(!narrateAloud && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+  render();
+}
+function speakText(text){
+  if(!narrateAloud || !text) return;
+  if(!('speechSynthesis' in window)) return;
+  try{
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 0.95;
+    window.speechSynthesis.speak(utter);
+  }catch(e){ /* speech not available — fail silently */ }
+}
 
 const CLASSES = ['Fighter','Wizard','Rogue','Cleric','Ranger','Barbarian','Bard','Druid','Paladin','Sorcerer','Warlock','Monk'];
 const RACES = ['Human','Elf','Dwarf','Halfling','Half-Orc','Tiefling','Dragonborn','Gnome','Half-Elf'];
@@ -423,6 +440,11 @@ async function refreshFromRemote(){
     if(!r.unchanged && r.state && (!session || r.state.version > session.version)){
       session = r.state;
       render();
+      const newLast = session.log.length ? session.log[session.log.length-1] : null;
+      if(newLast && newLast.type==='dm' && newLast.id !== lastSpokenEntryId){
+        lastSpokenEntryId = newLast.id;
+        speakText(newLast.text);
+      }
     }
   }catch(e){ /* silent — will retry on next poll */ }
 }
@@ -607,8 +629,11 @@ function copyDMPrompt(kind){
 async function postDMNarration(text){
   if(!text.trim()) return;
   await refreshFromRemote();
-  session.log.push({id:uid(), type:'dm', author:'Dungeon Master', text: text.trim(), ts: now()});
+  const entry = {id:uid(), type:'dm', author:'Dungeon Master', text: text.trim(), ts: now()};
+  session.log.push(entry);
   session.pendingActions = [];
+  lastSpokenEntryId = entry.id;
+  speakText(entry.text);
   await saveSession(sessionCode, session);
   render();
 }
@@ -637,6 +662,7 @@ async function createSession(campaignName, setting, token){
     sessionCode = await ghCreateGist(campaignName, session);
     role = 'dm';
     view = 'dm';
+    lastSpokenEntryId = session.log.length ? session.log[session.log.length-1].id : null;
     startPolling();
   }catch(e){
     lastError = 'Could not create a session — ' + (e && e.message ? e.message : 'unknown error');
@@ -655,6 +681,7 @@ async function joinAsDM(inviteCode){
   joiningSession = false;
   if(!s){ if(!lastError) lastError='No session found with that code.'; sharedToken=null; render(); return; }
   sessionCode = parsed.id; session = s; role='dm'; view='dm';
+  lastSpokenEntryId = session.log.length ? session.log[session.log.length-1].id : null;
   startPolling(); render();
 }
 
@@ -667,6 +694,7 @@ async function joinAsPlayer(inviteCode, name){
   joiningSession = false;
   if(!s){ if(!lastError) lastError='No session found with that code.'; sharedToken=null; render(); return; }
   sessionCode = parsed.id; session = s; role='player'; playerName = name; view='player';
+  lastSpokenEntryId = session.log.length ? session.log[session.log.length-1].id : null;
   startPolling(); render();
 }
 
@@ -755,8 +783,9 @@ async function endCombat(){
 
 function leaveSession(){
   stopPolling();
+  if('speechSynthesis' in window) window.speechSynthesis.cancel();
   view='landing'; role=null; sessionCode=null; session=null; playerName=null; characterId=null;
-  sharedToken=null; lastEtag=null; anthropicKey=null;
+  sharedToken=null; lastEtag=null; anthropicKey=null; lastSpokenEntryId=null;
   render();
 }
 
@@ -782,6 +811,7 @@ function renderHeader(){
       </div>
       <button class="ghost" id="copy-code-btn" onclick="copySessionCode()">Copy Invite</button>
       <button class="ghost" id="copy-link-btn" onclick="copyJoinLink()">Copy Join Link</button>
+      <button class="ghost" onclick="toggleNarrate()">${narrateAloud ? '🔊 Narrate: On' : '🔇 Narrate: Off'}</button>
       <button class="ghost" onclick="toggleTvMode()">${tvMode ? '📺 TV: On' : '📺 TV Mode'}</button>
       <button class="ghost" onclick="leaveSession()">Leave</button>
     </div>` : ''}
