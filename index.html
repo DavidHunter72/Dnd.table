@@ -314,6 +314,117 @@ function autoStats(cls){
   return stats;
 }
 
+// Weapon damage dice + governing ability, keyed by the weapon name CLASS_DATA/getEquipment already uses
+const WEAPON_INFO = {
+  'Greataxe': {dmg:'1d12', ability:'str'},
+  'Rapier': {dmg:'1d8', ability:'dex'},
+  'Mace': {dmg:'1d6', ability:'str'},
+  'Quarterstaff': {dmg:'1d6', ability:'str'},
+  'Longsword + Shield': {dmg:'1d8', ability:'str'},
+  'Shortsword': {dmg:'1d6', ability:'dex'},
+  'Longbow': {dmg:'1d8', ability:'dex'},
+  'Daggers': {dmg:'1d4', ability:'dex'},
+  'Arcane Focus': {dmg:'1d4', ability:'int'},
+  'Pact Weapon': {dmg:'1d8', ability:'cha'},
+};
+function detectWeapon(pc){
+  if(!pc.equipment) return null;
+  for(const item of pc.equipment){ if(WEAPON_INFO[item]) return item; }
+  return null;
+}
+let pendingManualDamage = null;
+
+function updateAttackPreview(){
+  if(!session.party.length) return;
+  const pc = session.party.find(p=>p.id===document.getElementById('atk-char').value) || session.party[0];
+  const type = document.getElementById('atk-type').value;
+  const abilitySel = document.getElementById('atk-ability');
+  const profCheckbox = document.getElementById('atk-prof');
+  const acField = document.getElementById('atk-ac-field');
+  let weaponName = null, info = null;
+  if(type==='attack'){
+    weaponName = detectWeapon(pc);
+    info = weaponName ? WEAPON_INFO[weaponName] : null;
+    if(info) abilitySel.value = info.ability;
+    profCheckbox.checked = true; profCheckbox.disabled = true;
+    acField.style.display = '';
+  } else {
+    profCheckbox.disabled = false;
+    acField.style.display = 'none';
+  }
+  const ability = abilitySel.value;
+  const mod = statMod(pc.abilities[ability]);
+  const prof = pc.proficiencyBonus || profBonus(pc.level||1);
+  const useProf = profCheckbox.checked;
+  const total = mod + (useProf?prof:0);
+  const preview = document.getElementById('atk-preview');
+  if(preview){
+    preview.innerHTML = `d20 ${fmtMod(total)} total mod (${ability.toUpperCase()} ${fmtMod(mod)}${useProf?` + proficiency ${fmtMod(prof)}`:''})` +
+      (weaponName ? ` &nbsp;·&nbsp; Weapon: ${esc(weaponName)} (damage ${info.dmg} ${info.ability.toUpperCase()})` : (type==='attack' ? ' &nbsp;·&nbsp; No weapon detected in gear — defaulting to 1d6' : ''));
+  }
+}
+
+function rollDamage(pc, dmgExpr, isCrit, ability){
+  const m = dmgExpr.match(/^(\d*)d(\d+)$/);
+  if(!m) return;
+  let count = parseInt(m[1]||'1',10);
+  const sides = parseInt(m[2],10);
+  if(isCrit) count *= 2; // 5e crit rule: roll double the dice, add modifier once
+  let rolls = [];
+  for(let i=0;i<count;i++) rolls.push(1+Math.floor(Math.random()*sides));
+  const mod = statMod(pc.abilities[ability]);
+  const total = Math.max(rolls.reduce((a,b)=>a+b,0) + mod, 0);
+  const text = `${pc.name} deals damage: ${dmgExpr}${isCrit?' (critical hit — dice doubled)':''} [${rolls.join(', ')}] ${fmtMod(mod)} = ${total} damage`;
+  postRoll(pc.name, {expr:'damage', rolls, mod, total, customText:text});
+}
+
+function rollCharacterD20(){
+  if(!session.party.length){ alert('Add a character in the Party tab first.'); return; }
+  const pc = session.party.find(p=>p.id===document.getElementById('atk-char').value);
+  if(!pc) return;
+  const type = document.getElementById('atk-type').value;
+  const ability = document.getElementById('atk-ability').value;
+  const useProf = document.getElementById('atk-prof').checked;
+  const mod = statMod(pc.abilities[ability]);
+  const prof = pc.proficiencyBonus || profBonus(pc.level||1);
+  const d20 = 1+Math.floor(Math.random()*20);
+  const total = d20 + mod + (useProf?prof:0);
+  const isCrit = d20===20, isFumble = d20===1;
+
+  if(type==='attack'){
+    const weaponName = detectWeapon(pc);
+    const info = weaponName ? WEAPON_INFO[weaponName] : {dmg:'1d6', ability};
+    const acRaw = document.getElementById('atk-target-ac').value;
+    const targetAc = acRaw ? parseInt(acRaw,10) : null;
+    let hit = null;
+    if(targetAc!==null) hit = isCrit ? true : (isFumble ? false : total>=targetAc);
+    let text = `${pc.name} attacks${weaponName?` with ${weaponName}`:''}: d20(${d20}) ${fmtMod(mod)} ${ability.toUpperCase()} + prof ${fmtMod(prof)} = ${total}`;
+    if(isCrit) text += ' — CRITICAL HIT!';
+    else if(isFumble) text += ' — natural 1, automatic miss.';
+    else if(targetAc!==null) text += hit ? ` — HIT (target AC ${targetAc})` : ` — MISS (target AC ${targetAc})`;
+    postRoll(pc.name, {expr:'attack', rolls:[d20], mod:0, total, customText:text});
+    pendingManualDamage = null;
+    if(hit===true || (isCrit && targetAc===null)){
+      rollDamage(pc, info.dmg, isCrit, info.ability);
+    } else if(targetAc===null && !isFumble){
+      pendingManualDamage = {pcId: pc.id, dmg: info.dmg, ability: info.ability};
+    }
+    render();
+  } else {
+    const label = type==='save' ? 'saving throw' : 'check';
+    const text = `${pc.name} rolls a ${ability.toUpperCase()} ${label}: d20(${d20}) ${fmtMod(mod)}${useProf?` + prof ${fmtMod(prof)}`:''} = ${total}${isCrit?' — natural 20!':''}${isFumble?' — natural 1.':''}`;
+    postRoll(pc.name, {expr:'d20', rolls:[d20], mod:0, total, customText:text});
+  }
+}
+
+function rollPendingDamage(){
+  if(!pendingManualDamage) return;
+  const pc = session.party.find(p=>p.id===pendingManualDamage.pcId);
+  if(pc) rollDamage(pc, pendingManualDamage.dmg, false, pendingManualDamage.ability);
+  pendingManualDamage = null;
+  render();
+}
+
 function uid(){ return Math.random().toString(36).slice(2,10); }
 function now(){ return Date.now(); }
 
@@ -754,8 +865,14 @@ async function submitPlayerAction(text){
 
 async function postRoll(author, result){
   await refreshFromRemote();
-  const detail = result.rolls.length>1 ? `[${result.rolls.join(', ')}]${result.mod?(result.mod>0?' +'+result.mod:' '+result.mod):''} = ` : (result.mod? `[${result.rolls[0]}]${result.mod>0?' +'+result.mod:' '+result.mod} = `:'');
-  session.log.push({id:uid(), type:'roll', author, text:`rolled ${result.expr} → ${detail}${result.total}`, ts: now()});
+  let text;
+  if(result.customText){
+    text = result.customText;
+  } else {
+    const detail = result.rolls.length>1 ? `[${result.rolls.join(', ')}]${result.mod?(result.mod>0?' +'+result.mod:' '+result.mod):''} = ` : (result.mod? `[${result.rolls[0]}]${result.mod>0?' +'+result.mod:' '+result.mod} = `:'');
+    text = `rolled ${result.expr} → ${detail}${result.total}`;
+  }
+  session.log.push({id:uid(), type:'roll', author, text, ts: now()});
   await saveSession(sessionCode, session);
   render();
 }
@@ -1197,8 +1314,27 @@ function submitCharacterForm(){
 
 function renderDiceTab(){
   return `
+  ${session.party.length ? `
   <div class="card">
-    <h2>Dice</h2>
+    <h2>⚔ Character Roll</h2>
+    <div class="row">
+      <div class="field"><label>Character</label><select id="atk-char" onchange="updateAttackPreview()">${session.party.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Roll Type</label><select id="atk-type" onchange="updateAttackPreview()"><option value="attack">Attack Roll</option><option value="check">Ability Check</option><option value="save">Saving Throw</option></select></div>
+      <div class="field"><label>Ability</label><select id="atk-ability" onchange="updateAttackPreview()">${['str','dex','con','int','wis','cha'].map(a=>`<option value="${a}">${a.toUpperCase()}</option>`).join('')}</select></div>
+    </div>
+    <div class="row">
+      <div class="field"><label style="display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0;"><input type="checkbox" id="atk-prof" checked style="width:auto;" onchange="updateAttackPreview()" /> Add proficiency bonus</label></div>
+      <div class="field" id="atk-ac-field"><label>Target AC (optional — enables auto-damage on hit)</label><input id="atk-target-ac" type="number" placeholder="e.g. 15" onchange="updateAttackPreview()" /></div>
+    </div>
+    <div class="banner info" id="atk-preview" style="font-size:12.5px;"></div>
+    <div class="row" style="margin-top:10px;">
+      <button class="primary" onclick="rollCharacterD20()">Roll</button>
+      ${pendingManualDamage ? `<button onclick="rollPendingDamage()">🎲 Roll Damage (from last attack)</button>` : ''}
+    </div>
+  </div>` : `<div class="card"><p class="hint">Add characters in the Party tab to unlock attack rolls, ability checks, and saving throws with automatic proficiency and damage.</p></div>`}
+
+  <div class="card">
+    <h2>Plain Dice</h2>
     <div class="dice-quick">
       ${['d4','d6','d8','d10','d12','d20','d100'].map(d=>`<button onclick="quickRoll('${d}')">${d}</button>`).join('')}
     </div>
@@ -1286,6 +1422,10 @@ function render(){
 
   const logEl = document.getElementById('log-scroll');
   if(logEl) logEl.scrollTop = logEl.scrollHeight;
+
+  if(activeTab==='dice' && session && session.party && session.party.length && document.getElementById('atk-char')){
+    updateAttackPreview();
+  }
 }
 
 (function checkJoinLink(){
